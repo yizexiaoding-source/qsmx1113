@@ -25,10 +25,11 @@ export default async function handler(request: Request) {
 
   try {
     const body = await request.json();
-    const apiKey = process.env.DEEPSEEK_API_KEY;
+    const apiKey = process.env.DASHSCOPE_API_KEY;
 
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: "DeepSeek API Key not configured on server" }), {
+    const baseURL = process.env.DASHSCOPE_BASE_URL?.trim().replace(/\/$/, "");
+    if (!apiKey || !baseURL) {
+      return new Response(JSON.stringify({ error: "请配置 DASHSCOPE_API_KEY 和 DASHSCOPE_BASE_URL" }), {
         status: 500,
         headers: {
           "Content-Type": "application/json",
@@ -37,12 +38,19 @@ export default async function handler(request: Request) {
       });
     }
 
+    const endpoint = new URL(baseURL);
+    if (endpoint.protocol !== "https:" || !endpoint.hostname.endsWith(".aliyuncs.com") || !endpoint.pathname.endsWith("/compatible-mode/v1")) {
+      return Response.json({ error: "百炼接口地址配置不正确" }, { status: 503 });
+    }
+
     const safeBody = {
       ...body,
+      model: "qwen3.8-flash",
+      enable_thinking: false,
       max_tokens: typeof body.max_tokens === "number" ? Math.min(body.max_tokens, 8192) : body.max_tokens,
     };
 
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
+    const response = await fetch(`${baseURL}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -54,8 +62,8 @@ export default async function handler(request: Request) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      return new Response(JSON.stringify({ error: `DeepSeek API Error: ${response.status} ${errorText}` }), {
+      await response.body?.cancel();
+      return new Response(JSON.stringify({ error: `百炼调用失败（${response.status}），请核对密钥、模型权限和额度` }), {
         status: response.status,
         headers: {
           "Content-Type": "application/json",
@@ -74,7 +82,7 @@ export default async function handler(request: Request) {
       },
     });
   } catch (error: any) {
-    return new Response(JSON.stringify({ error: error?.message || "DeepSeek request failed" }), {
+    return new Response(JSON.stringify({ error: "百炼请求失败，请检查配置或稍后重试" }), {
       status: 500,
       headers: {
         "Content-Type": "application/json",

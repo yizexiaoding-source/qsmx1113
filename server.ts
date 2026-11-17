@@ -480,20 +480,20 @@ async function startServer() {
   // API Route: DeepSeek
   app.post("/api/deepseek", async (req, res) => {
     try {
-      const apiKey = process.env.DEEPSEEK_API_KEY;
+      const apiKey = process.env.DASHSCOPE_API_KEY;
 
-      if (!apiKey) {
-        return res.status(500).json({ error: "DeepSeek API Key not configured on server" });
+      if (!apiKey || !process.env.DASHSCOPE_BASE_URL) {
+        return res.status(500).json({ error: "百炼配置缺失" });
       }
 
-      const response = await fetch("https://api.deepseek.com/chat/completions", {
+      const response = await fetch(`${process.env.DASHSCOPE_BASE_URL?.trim().replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${apiKey}`,
           "Accept": "application/json",
         },
-        body: JSON.stringify(req.body),
+        body: JSON.stringify({ ...req.body, model: req.body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017", enable_thinking: req.body.model === "deepseek-reasoner" }),
         signal: AbortSignal.timeout(45000),
       });
 

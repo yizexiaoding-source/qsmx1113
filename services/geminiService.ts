@@ -22,6 +22,7 @@ export function normalizeClientModel(rawModel?: string): string {
         trimmed === 'gemini-4-argon' ||
         trimmed === 'gemini-4-carbon' ||
         trimmed === 'gemini-3.1-flash-lite' ||
+        trimmed === 'qwen3.8-flash' ||
         trimmed === 'deepseek-chat' ||
         trimmed === 'deepseek-reasoner' ||
         trimmed === 'doubao-flash'
@@ -392,7 +393,7 @@ async function generateSingleText(prompt: string, options: GenerationOptions): P
             console.error('Error generating text with Gemini:', error);
             return formatGeminiError(error.message || String(error));
         }
-    } else if (normalizedModel.startsWith('deepseek') || normalizedModel.startsWith('doubao')) {
+    } else if (normalizedModel.startsWith('qwen') || normalizedModel.startsWith('deepseek') || normalizedModel.startsWith('doubao')) {
         const endpoint = normalizedModel.startsWith('doubao') ? '/api/doubao' : '/api/deepseek';
         const effectiveMaxTokens = Math.min(maxOutputTokens, 8192);
 
@@ -513,7 +514,7 @@ async function* generateSingleTextStream(prompt: string, options: GenerationOpti
             console.error('Error generating text stream with Gemini:', error);
             yield formatGeminiError(error.message || String(error));
         }
-    } else if (normalizedModel.startsWith('deepseek') || normalizedModel.startsWith('doubao')) {
+    } else if (normalizedModel.startsWith('qwen') || normalizedModel.startsWith('deepseek') || normalizedModel.startsWith('doubao')) {
         const endpoint = normalizedModel.startsWith('doubao') ? '/api/doubao' : '/api/deepseek';
         const effectiveMaxTokens = Math.min(maxOutputTokens, 8192);
 

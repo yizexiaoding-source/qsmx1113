@@ -442,6 +442,7 @@ export const GEMINI_MODEL_OPTIONS: ModelOptionItem[] = [
 export const ALL_MODEL_OPTIONS: ModelOptionItem[] = [
   { value: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen" },
   { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
-  { value: "deepseek-chat", label: "奇思版 (DeepSeek V3)" },
+  { value: "qwen3.8-flash", label: "千问 Qwen3.8-Flash" },
+  { value: "deepseek-chat", label: "DeepSeek V4.1 Flash" },
   { value: "doubao-flash", label: "速写版 (豆包)" },
 ];

@@ -45,8 +45,8 @@ export default async function handler(request: Request) {
 
     const safeBody = {
       ...body,
-      model: "qwen3.8-flash",
-      enable_thinking: false,
+      model: body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017",
+      enable_thinking: body.model === "deepseek-reasoner",
       max_tokens: typeof body.max_tokens === "number" ? Math.min(body.max_tokens, 8192) : body.max_tokens,
     };
 

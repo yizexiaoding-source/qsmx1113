@@ -11,48 +11,9 @@ const CORS_HEADERS: Record<string, string> = {
 };
 
 function normalizeGeminiModel(rawModel?: string): string {
-  const m = typeof rawModel === "string" ? rawModel.toLowerCase().trim() : "";
-  if (!m) return "gemini-4-hydrogen";
-  if (
-    m === "gemini-3.1-flash-lite" ||
-    m === "gemini-3.1-flash-lite-preview" ||
-    m === "flash lite" ||
-    m === "gemini lite"
-  ) {
-    return "gemini-3.1-flash-lite";
-  }
-  if (
-    m === "gemini-4-hydrogen" ||
-    m === "gemini-4-argon" ||
-    m === "gemini-4-carbon"
-  ) {
-    return m;
-  }
-  if (
-    m.startsWith("gemini-3.5") ||
-    m.includes("3-5") ||
-    m.includes("3.5") ||
-    m.includes("flash") ||
-    m === "gemini-2.0" ||
-    m === "gemini-1.5"
-  ) {
-    return "gemini-3.1-flash-lite";
-  }
-  if (
-    m.startsWith("gemini-3.8") ||
-    m.startsWith("gemini-3.7") ||
-    m.startsWith("gemini-3.6") ||
-    m.startsWith("gemini-2.5") ||
-    m.startsWith("gemini-2.0") ||
-    m.startsWith("gemini-1.5") ||
-    m === "gemini-pro" ||
-    m === "gemini-3-pro-preview" ||
-    m === "gemini-3.1-pro-preview" ||
-    m.startsWith("claude-3")
-  ) {
-    return "gemini-4-hydrogen";
-  }
-  return rawModel!.trim();
+  const model = typeof rawModel === "string" ? rawModel.toLowerCase().trim() : "";
+  return ["gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"].includes(model)
+    ? model : "gemini-4-hydrogen";
 }
 
 function resolveThinkingLevel(
@@ -60,7 +21,7 @@ function resolveThinkingLevel(
   levelRaw?: string,
   isStreamRequest = false
 ): ThinkingLevel | undefined {
-  if (!(targetModel.startsWith("gemini-4-") || targetModel.startsWith("gemini-3"))) {
+  if (!(targetModel.startsWith("gemini-4-"))) {
     return undefined;
   }
   if (!levelRaw || typeof levelRaw !== "string") {

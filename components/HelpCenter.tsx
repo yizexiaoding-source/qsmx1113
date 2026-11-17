@@ -141,7 +141,7 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                                 "点击“开始创作”，自动流式生成初稿或万字长篇"
                             ]}
                         >
-                            <SubModule name="文风仿写与万字长篇直出">支持上传或粘贴参考文本进行深度仿写；将「最大长度」滑块拉高至 16384~32768 时（含 Gemini 3.1 Flash Lite 等模型），自动启用多幕无缝接力，单次连续生成可达万字以上且不提前烂尾。</SubModule>
+                            <SubModule name="文风仿写与万字长篇直出">支持上传或粘贴参考文本进行深度仿写；将「最大长度」滑块拉高至 16384~32768 时（含 Gemini 4 Hydrogen 等模型），自动启用多幕无缝接力，单次连续生成可达万字以上且不提前烂尾。</SubModule>
                             <SubModule name="创意脑洞与金手指">只需提供一个核心母题或世界观，AI 自动构建具备强反转的故事雏形与契合爽点的专属金手指设定。</SubModule>
                             <SubModule name="人物设定">输入角色雏形，AI 生成包含性格弧光、外貌特征、隐藏秘密和人物关系网的完整人设方案。</SubModule>
                             <SubModule name="大纲与细纲">从全局视角生成故事脉络，并进一步拆解到章节级，详细规划每一章的情节推进与冲突点。</SubModule>
@@ -342,7 +342,7 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                                     <Sparkles className="w-4 h-4 text-sky-500" /> 创意与万字仿写教程
                                 </h4>
                                 <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-                                    选取仿写或正文提示词后，点击「参数」将最大长度拉至 16384~32768，即使选用轻快模型（如 Gemini 3.1 Flash Lite）也能自动分幕无缝生成万字完整小说。
+                                    选取仿写或正文提示词后，点击「参数」将最大长度拉至 16384~32768，即使选用轻快模型（如 Gemini 4 Hydrogen）也能自动分幕无缝生成万字完整小说。
                                 </p>
                             </div>
                             <div className="bg-white dark:bg-gray-900 p-5 rounded-2xl border border-gray-100 dark:border-gray-800 space-y-2">
@@ -415,7 +415,7 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                                 date="2026.01.10"
                                 features={[
                                     "新增「工作流选中追问」：在运行结果中选中文字，即可进行上下文感知的定向追问。",
-                                    "模型升级：全面接入 Gemini 3.0 Flash 与 DeepSeek-V3，生成更智能、响应更迅速。",
+                                    "模型升级：全面接入 Gemini 4 与 DeepSeek-V3，生成更智能、响应更迅速。",
                                     "优化了续写生成的连贯性逻辑，减少上下文断层。"
                                 ]}
                             />

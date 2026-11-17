@@ -435,7 +435,8 @@ ${FORCE_LONG_INSTRUCTION}
 
     const MODEL_OPTIONS = [
         { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' },
-        { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
+        { value: 'gemini-4-argon', label: 'Gemini 4 Argon' },
+        { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon' },
         { value: 'qwen3.8-flash', label: '千问 Qwen3.8-Flash' },
         { value: 'deepseek-chat', label: 'DeepSeek V4.1 Flash' },
         { value: 'deepseek-reasoner', label: 'DeepSeek V4.1 Flash（思考）' }

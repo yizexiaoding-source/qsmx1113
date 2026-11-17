@@ -283,8 +283,8 @@ export async function callReviewModel(
     }
 
     try {
-        if (model.startsWith('deepseek') || model.startsWith('doubao')) {
-            const endpoint = model.startsWith('doubao') ? '/api/doubao' : '/api/deepseek';
+        if (model.startsWith('deepseek') || model.startsWith('qwen')) {
+            const endpoint = '/api/deepseek';
             const resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -314,7 +314,7 @@ export async function callReviewModel(
                 } catch {
                     if (errRaw) errMsg = errRaw.slice(0, 220);
                 }
-                const label = model.startsWith('doubao') ? '豆包 (Doubao)' : 'DeepSeek V3';
+                const label = model.startsWith('qwen') ? 'Qwen3.8-Flash' : 'DeepSeek V4.1 Flash';
                 throw new Error(`${label} 接口调用失败：${errMsg}`);
             }
 

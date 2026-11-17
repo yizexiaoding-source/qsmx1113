@@ -6,61 +6,12 @@ interface GenerationOptions {
     signal?: AbortSignal;
 }
 
-/**
- * Normalize legacy or deprecated model IDs (e.g., saved 3.5 / 2.5 / 3.8 configs)
- * to currently active backend models so requests never stall or hit simulation fallback.
- */
+// Old saved Gemini choices migrate to Gemini 4 Hydrogen.
 export function normalizeClientModel(rawModel?: string): string {
-    if (!rawModel || typeof rawModel !== 'string') {
-        return 'gemini-4-hydrogen';
-    }
-    const trimmed = rawModel.trim();
-    const lower = trimmed.toLowerCase();
-
-    if (
-        trimmed === 'gemini-4-hydrogen' ||
-        trimmed === 'gemini-4-argon' ||
-        trimmed === 'gemini-4-carbon' ||
-        trimmed === 'gemini-3.1-flash-lite' ||
-        trimmed === 'qwen3.8-flash' ||
-        trimmed === 'deepseek-chat' ||
-        trimmed === 'deepseek-reasoner' ||
-        trimmed === 'doubao-flash'
-    ) {
-        return trimmed;
-    }
-
-    if (
-        lower.includes('3.1-flash') ||
-        lower.includes('flash') ||
-        lower.includes('3.5') ||
-        lower.includes('3-5')
-    ) {
-        return 'gemini-3.1-flash-lite';
-    }
-
-    if (lower.startsWith('deepseek')) {
-        return lower.includes('reasoner') ? 'deepseek-reasoner' : 'deepseek-chat';
-    }
-
-    if (lower.startsWith('doubao')) {
-        return 'doubao-flash';
-    }
-
-    if (
-        lower.startsWith('gemini') ||
-        lower.startsWith('claude') ||
-        lower.includes('2.5') ||
-        lower.includes('3.8') ||
-        lower.includes('3.7') ||
-        lower.includes('3.6') ||
-        lower.includes('2.0') ||
-        lower.includes('1.5')
-    ) {
-        return 'gemini-4-hydrogen';
-    }
-
-    return 'gemini-3.1-flash-lite';
+    const model = typeof rawModel === 'string' ? rawModel.trim().toLowerCase() : '';
+    if (['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-4-carbon', 'qwen3.8-flash', 'deepseek-chat', 'deepseek-reasoner'].includes(model)) return model;
+    if (model.startsWith('deepseek') || model.startsWith('doubao')) return model.includes('reasoner') ? 'deepseek-reasoner' : 'deepseek-chat';
+    return 'gemini-4-hydrogen';
 }
 
 function createAttemptSignal(userSignal?: AbortSignal, timeoutMs = 75000): {
@@ -190,7 +141,7 @@ function formatGeminiError(errorMsg: string): string {
         return '⚠️ 模型当前负载过高 (Server Overloaded)，请稍后再试或切换其他可用模型。';
     }
     if (errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('RESOURCE_EXHAUSTED')) {
-        return '⚠️ 当前模型接口调用频率或免费额度已达上限 (429 Quota Exceeded)。建议在模型下拉菜单中切换为【Gemini 3.1 Flash Lite】、【奇思版 (DeepSeek)】或【速写版 (豆包)】继续流畅创作！';
+        return '⚠️ 当前模型接口调用频率或免费额度已达上限 (429 Quota Exceeded)。建议在模型下拉菜单中切换为【Gemini 4 Hydrogen】、【奇思版 (DeepSeek)】或【千问 Qwen3.8-Flash】继续流畅创作！';
     }
     try {
         if (errorMsg.trim().startsWith('{')) {
@@ -393,8 +344,8 @@ async function generateSingleText(prompt: string, options: GenerationOptions): P
             console.error('Error generating text with Gemini:', error);
             return formatGeminiError(error.message || String(error));
         }
-    } else if (normalizedModel.startsWith('qwen') || normalizedModel.startsWith('deepseek') || normalizedModel.startsWith('doubao')) {
-        const endpoint = normalizedModel.startsWith('doubao') ? '/api/doubao' : '/api/deepseek';
+    } else if (normalizedModel.startsWith('qwen') || normalizedModel.startsWith('deepseek')) {
+        const endpoint = '/api/deepseek';
         const effectiveMaxTokens = Math.min(maxOutputTokens, 8192);
 
         try {
@@ -436,17 +387,17 @@ async function generateSingleText(prompt: string, options: GenerationOptions): P
             if (error.name === 'AbortError' || error.message === 'Aborted' || options.signal?.aborted) {
                 throw new Error('Aborted');
             }
-            console.warn(`Error generating text with ${normalizedModel}, falling back to Gemini 3.1 Flash Lite:`, error);
+            console.warn(`Error generating text with ${normalizedModel}, falling back to Gemini 4 Hydrogen:`, error);
             return generateSingleText(prompt, {
                 ...options,
-                model: 'gemini-3.1-flash-lite'
+                model: 'gemini-4-hydrogen'
             });
         }
     }
 
     return generateSingleText(prompt, {
         ...options,
-        model: 'gemini-3.1-flash-lite'
+        model: 'gemini-4-hydrogen'
     });
 }
 
@@ -514,8 +465,8 @@ async function* generateSingleTextStream(prompt: string, options: GenerationOpti
             console.error('Error generating text stream with Gemini:', error);
             yield formatGeminiError(error.message || String(error));
         }
-    } else if (normalizedModel.startsWith('qwen') || normalizedModel.startsWith('deepseek') || normalizedModel.startsWith('doubao')) {
-        const endpoint = normalizedModel.startsWith('doubao') ? '/api/doubao' : '/api/deepseek';
+    } else if (normalizedModel.startsWith('qwen') || normalizedModel.startsWith('deepseek')) {
+        const endpoint = '/api/deepseek';
         const effectiveMaxTokens = Math.min(maxOutputTokens, 8192);
 
         try {
@@ -618,16 +569,16 @@ async function* generateSingleTextStream(prompt: string, options: GenerationOpti
             }
         } catch (error: any) {
             if (error.name === 'AbortError' || error.message === 'Aborted' || options.signal?.aborted) return;
-            console.warn(`Error generating text stream with ${normalizedModel}, falling back to Gemini 3.1 Flash Lite:`, error);
+            console.warn(`Error generating text stream with ${normalizedModel}, falling back to Gemini 4 Hydrogen:`, error);
             yield* generateSingleTextStream(prompt, {
                 ...options,
-                model: 'gemini-3.1-flash-lite'
+                model: 'gemini-4-hydrogen'
             });
         }
     } else {
         yield* generateSingleTextStream(prompt, {
             ...options,
-            model: 'gemini-3.1-flash-lite'
+            model: 'gemini-4-hydrogen'
         });
     }
 }

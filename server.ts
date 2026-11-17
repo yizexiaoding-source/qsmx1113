@@ -30,48 +30,9 @@ async function startServer() {
 
       // Normalize deprecated/sunset model aliases while preserving exact active model choice
       const normalizeGeminiModel = (rawModel?: string): string => {
-        const m = typeof rawModel === "string" ? rawModel.toLowerCase().trim() : "";
-        if (!m) return "gemini-4-hydrogen";
-        if (
-          m === "gemini-3.1-flash-lite" ||
-          m === "gemini-3.1-flash-lite-preview" ||
-          m === "flash lite" ||
-          m === "gemini lite"
-        ) {
-          return "gemini-3.1-flash-lite";
-        }
-        if (
-          m === "gemini-4-hydrogen" ||
-          m === "gemini-4-argon" ||
-          m === "gemini-4-carbon"
-        ) {
-          return m;
-        }
-        if (
-          m.startsWith("gemini-3.5") ||
-          m.includes("3-5") ||
-          m.includes("3.5") ||
-          m.includes("flash") ||
-          m === "gemini-2.0" ||
-          m === "gemini-1.5"
-        ) {
-          return "gemini-3.1-flash-lite";
-        }
-        if (
-          m.startsWith("gemini-3.8") ||
-          m.startsWith("gemini-3.7") ||
-          m.startsWith("gemini-3.6") ||
-          m.startsWith("gemini-2.5") ||
-          m.startsWith("gemini-2.0") ||
-          m.startsWith("gemini-1.5") ||
-          m === "gemini-pro" ||
-          m === "gemini-3-pro-preview" ||
-          m === "gemini-3.1-pro-preview" ||
-          m.startsWith("claude-3")
-        ) {
-          return "gemini-4-hydrogen";
-        }
-        return rawModel!.trim();
+        const model = typeof rawModel === "string" ? rawModel.toLowerCase().trim() : "";
+        return ["gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"].includes(model)
+          ? model : "gemini-4-hydrogen";
       };
 
       const resolvedModel = normalizeGeminiModel(model);
@@ -90,7 +51,7 @@ async function startServer() {
         levelRaw?: string,
         isStreamRequest = false
       ): ThinkingLevel | undefined => {
-        if (!(targetModel.startsWith("gemini-4-") || targetModel.startsWith("gemini-3"))) {
+        if (!(targetModel.startsWith("gemini-4-"))) {
           return undefined;
         }
         if (!levelRaw || typeof levelRaw !== "string") {
@@ -514,68 +475,6 @@ async function startServer() {
       res.end();
     } catch (error: any) {
       console.error("DeepSeek API Error inside Express:", error);
-      if (res.headersSent) {
-        try {
-          res.end();
-        } catch {}
-        return;
-      }
-      res.status(500).json({ error: error.message || String(error) });
-    }
-  });
-
-  // API Route: Doubao
-  app.post("/api/doubao", async (req, res) => {
-    try {
-      const apiKey = process.env.ARK_API_KEY;
-      const { model, messages, temperature, top_p, max_tokens, stream } = req.body;
-
-      if (!apiKey) {
-        return res.status(500).json({ error: "ARK_API_KEY not configured on server" });
-      }
-
-      let endpointId = "";
-      if (model && model.startsWith("doubao")) {
-        endpointId = "ep-20251229180745-tbpdh";
-      } else {
-        endpointId = model;
-      }
-
-      const response = await fetch("https://ark.cn-beijing.volces.com/api/v3/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-          "Accept": "application/json",
-        },
-        body: JSON.stringify({
-          model: endpointId,
-          messages,
-          temperature,
-          top_p,
-          max_tokens: typeof max_tokens === "number" ? Math.min(max_tokens, 16384) : max_tokens,
-          stream,
-        }),
-        signal: AbortSignal.timeout(45000),
-      });
-
-      res.status(response.status);
-      res.setHeader("Content-Type", response.headers.get("Content-Type") || "application/json");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.setHeader("Access-Control-Allow-Origin", "*");
-
-      if (response.body) {
-        const reader = response.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-        }
-      }
-      res.end();
-    } catch (error: any) {
-      console.error("Doubao API Error inside Express:", error);
       if (res.headersSent) {
         try {
           res.end();

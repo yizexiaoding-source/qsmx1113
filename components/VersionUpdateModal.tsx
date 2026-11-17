@@ -81,7 +81,7 @@ const VersionUpdateModal: React.FC = () => {
                                 流式秒级响应 &amp; 3.1 万字仿写多幕直出
                             </h3>
                             <p className="text-xs text-indigo-900 dark:text-indigo-200 leading-relaxed">
-                                全面修复历史 3.5 模型及流式长考无响应问题；各创作面板「最大长度」滑块上限提升至 <span className="font-bold">32768</span>，使用 Gemini 3.1 Flash Lite 等模型拉高滑块生成仿写或长篇正文时，自动启用多幕无缝接力直出万字长文。
+                                全面修复历史 3.5 模型及流式长考无响应问题；各创作面板「最大长度」滑块上限提升至 <span className="font-bold">32768</span>，使用 Gemini 4 Hydrogen 等模型拉高滑块生成仿写或长篇正文时，自动启用多幕无缝接力直出万字长文。
                             </p>
                         </div>
                     </div>

@@ -1,22 +1,15 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// Fix: Extremely safe access to import.meta.env
-const getEnvVar = (key: string, defaultValue: string) => {
-    try {
-        // @ts-ignore
-        if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
-            // @ts-ignore
-            return import.meta.env[key];
-        }
-    } catch (e) {
-        // Ignore errors during access
-    }
-    return defaultValue;
-};
+// Use explicit Vite references so production builds replace these values.
+// @ts-ignore -- Vite injects import.meta.env during the client build.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+// @ts-ignore -- Client publishable/anon key; never use a secret/service-role key here.
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-const SUPABASE_URL = getEnvVar('VITE_SUPABASE_URL', 'https://kuvfgccoyekvkolkgwby.supabase.co');
-const SUPABASE_ANON_KEY = getEnvVar('VITE_SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1dmZnY2NveWVrdmtvbGtnd2J5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU0NDc5NzIsImV4cCI6MjA4MTAyMzk3Mn0.94-LLSUIN5HSfi4-wq0dhmxAP1T2beyKiR8z7CdWstg');
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('缺少 Supabase 配置：请设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_ANON_KEY 后重新构建');
+}
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {

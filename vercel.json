@@ -8,7 +8,7 @@
     },
     {
       "source": "/supabase-proxy/:path*",
-      "destination": "https://kuvfgccoyekvkolkgwby.supabase.co/:path*"
+      "destination": "https://omfadzgmzuzseouupprg.supabase.co/:path*"
     },
     {
       "source": "/(.*)",

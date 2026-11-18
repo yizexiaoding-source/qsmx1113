@@ -11,6 +11,17 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     throw new Error('缺少 Supabase 配置：请设置 VITE_SUPABASE_URL 和 VITE_SUPABASE_ANON_KEY 后重新构建');
 }
 
+// Capture recovery intent before the SDK consumes and removes the URL fragment.
+const authCallback = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.hash.slice(1)) : new URLSearchParams();
+export const recoveryLinkError = authCallback.has('error') || authCallback.has('error_code');
+export const initialPasswordRecovery = authCallback.get('type') === 'recovery'
+    || recoveryLinkError
+    || (typeof window !== 'undefined' && sessionStorage.getItem('password_recovery_pending') === 'true');
+if (initialPasswordRecovery && typeof window !== 'undefined') {
+    sessionStorage.setItem('password_recovery_pending', 'true');
+}
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
         persistSession: true,

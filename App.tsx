@@ -3,8 +3,9 @@ import React, { useState, useEffect } from 'react';
 import { View, Prompt } from './types';
 import Sidebar from './components/Sidebar';
 import AuthModal from './components/AuthModal';
+import PasswordRecovery from './components/PasswordRecovery';
 import VersionUpdateModal from './components/VersionUpdateModal'; // Import VersionUpdateModal
-import { getCurrentUserId, signOut } from './services/supabaseService';
+import { getCurrentUserId, signOut, supabase, initialPasswordRecovery } from './services/supabaseService';
 
 // --- Static Imports for Instant Access & Data Persistence ---
 import CreativeGeneration from './components/CreativeGeneration';
@@ -28,6 +29,18 @@ const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isGuestMode, setIsGuestMode] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(initialPasswordRecovery);
+
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        sessionStorage.setItem('password_recovery_pending', 'true');
+        setPasswordRecovery(true);
+        setIsGuestMode(false);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   // State to pass prompt data from Library to Generation
   const [generationParams, setGenerationParams] = useState<{prompt?: Prompt, values?: Record<string, string>}>({});
@@ -85,6 +98,14 @@ const App: React.FC = () => {
     setGenerationParams({ prompt, values });
     setActiveView('creative-generation');
   };
+
+  if (passwordRecovery) {
+    return <PasswordRecovery onDone={() => {
+      sessionStorage.removeItem('password_recovery_pending');
+      window.history.replaceState(null, '', window.location.pathname);
+      window.location.reload();
+    }} />;
+  }
 
   return (
     <div className="flex h-screen bg-white dark:bg-black text-gray-900 dark:text-gray-100 font-sans transition-colors duration-300">

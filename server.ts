@@ -1,3 +1,4 @@
+import { geminiStream } from './lib/geminiStream';
 import express from "express";
 import path from "path";
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
@@ -231,82 +232,15 @@ async function startServer() {
           resolvedModel
         );
 
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.setHeader("Content-Type", req.body.stream_protocol === 'ndjson' ? "application/x-ndjson" : "text/plain; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-transform");
-        res.setHeader("X-Accel-Buffering", "no");
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        if (typeof res.flushHeaders === "function") {
-          res.flushHeaders();
-        }
-
-        let wroteAnyText = false;
-        let lastFinishReason = "";
-        const iterator = responseStream[Symbol.asyncIterator]();
-
+        res.flushHeaders();
+        const reader = geminiStream(responseStream, req.body.stream_protocol === 'ndjson').getReader();
+        res.on('close', () => { void reader.cancel(); });
         while (true) {
-          const iterResult = await withTimeout(
-            iterator.next(),
-            45000,
-            `Stream chunk ${resolvedModel}`
-          );
-          if (iterResult.done) break;
-          const chunk = iterResult.value;
-          if (chunk?.candidates?.[0]?.finishReason) {
-            lastFinishReason = String(chunk.candidates[0].finishReason);
-          }
-
-          let text = "";
-          if (Array.isArray(chunk?.candidates?.[0]?.content?.parts)) {
-            text = chunk.candidates[0].content.parts
-              .filter((p: any) => typeof p?.text === "string" && !p?.thought)
-              .map((p: any) => p.text)
-              .join("");
-          }
-          if (!text) {
-            try {
-              text = chunk?.text || "";
-            } catch {
-              // ignore blocked content getter error
-            }
-          }
-
-          if (text) {
-            wroteAnyText = true;
-            res.write(text);
-          }
-        }
-
-        // Fallback if stream returned 0 visible characters (e.g. blocked or thought-only response)
-        if (!wroteAnyText) {
-          const upperReason = lastFinishReason.toUpperCase();
-          if (
-            upperReason.includes("SAFETY") ||
-            upperReason.includes("PROHIBITED") ||
-            upperReason.includes("BLOCK") ||
-            upperReason.includes("RECITATION")
-          ) {
-            res.write(`⚠️ 当前生成请求触发了模型内容安全拦截（原因：${lastFinishReason}），未返回正文。请调整敏感冲突词汇或切换至其他模型后重试。`);
-          } else {
-            try {
-              const fallbackResp = await withTimeout(
-                ai.models.generateContent({
-                  model: resolvedModel,
-                  contents: contents,
-                  config: buildGenerateConfig(resolvedModel, false, true, false),
-                }),
-                45000,
-                `Fallback non-stream ${resolvedModel}`
-              );
-              const extracted = extractGeminiResponseText(fallbackResp);
-              if (extracted.text) {
-                res.write(extracted.text);
-              } else {
-                res.write(`⚠️ 模型未返回有效文本（状态：${extracted.finishReason || lastFinishReason || "EMPTY"}），请稍后重试或切换其他模型。`);
-              }
-            } catch (fbErr: any) {
-              res.write(`⚠️ 模型响应超时或为空（${fbErr?.message || "EMPTY"}），请重试或切换其他模型。`);
-            }
-          }
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
         }
         res.end();
       } else {
@@ -447,6 +381,8 @@ async function startServer() {
         return res.status(500).json({ error: "百炼配置缺失" });
       }
 
+      const upstreamController = new AbortController();
+      res.on('close', () => upstreamController.abort());
       const response = await fetch(`${process.env.DASHSCOPE_BASE_URL?.trim().replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: {
@@ -455,7 +391,7 @@ async function startServer() {
           "Accept": "application/json",
         },
         body: JSON.stringify({ ...req.body, model: req.body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017", enable_thinking: req.body.model === "deepseek-reasoner", max_tokens: typeof req.body.max_tokens === "number" ? Math.max(1, Math.min(Math.floor(req.body.max_tokens), 65536)) : req.body.max_tokens }),
-        signal: AbortSignal.timeout(45000),
+        signal: upstreamController.signal,
       });
 
       res.status(response.status);

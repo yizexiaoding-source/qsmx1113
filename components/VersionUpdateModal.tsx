@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Check, Sparkles, ClipboardDocumentCheck, AdjustmentsHorizontal } from './Icon';
 
-const CURRENT_VERSION = 'v1.9.1';
+const CURRENT_VERSION = 'v1.9.2';
 const STORAGE_KEY = `qisimiaoxie_version_seen_${CURRENT_VERSION}`;
 
 const VersionUpdateModal: React.FC = () => {
@@ -57,10 +57,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <ClipboardDocumentCheck className="w-4 h-4 text-indigo-500" />
-                                一次创作，围绕同一个故事
+                                中断自动恢复，同一个故事继续写
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                取消为凑字数自动多次生成、拼接正文。加强单篇故事约束，检查明显的第二篇或完结后重开标记，避免一次任务混入两篇独立内容。
+                                创意生成遇到输出上限或连接中断时，使用同一模型自动恢复最多 3 次。恢复失败保留草稿并提供继续生成，错误信息不再混入正文。
                             </p>
                         </div>
 
@@ -79,10 +79,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
                             <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-300 mb-1.5 flex items-center gap-2">
                                 <Sparkles className="w-4 h-4" />
-                                输出预算更透明
+                                审稿切换，保留问题位置
                             </h3>
                             <p className="text-xs text-indigo-900 dark:text-indigo-200 leading-relaxed">
-                                创作页输出预算最高 <span className="font-bold">65536 token</span>，移除原先 8192 token 的代码限制和“约 1.2 万字”的估算。Token 是模型输出预算，不是中文字数，也不保证模型一定用满；实际输出受所选模型影响。
+                                选中问题后切换编辑正文，自动定位并选中文字；切换高亮模式保留原文位置。相似度视图保留原标点及段落。创作页以目标字数和实际字数展示进度。
                             </p>
                         </div>
                     </div>

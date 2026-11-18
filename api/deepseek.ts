@@ -58,7 +58,7 @@ export default async function handler(request: Request) {
         "Accept": "application/json",
       },
       body: JSON.stringify(safeBody),
-      signal: AbortSignal.timeout(50000),
+      signal: request.signal,
     });
 
     if (!response.ok) {

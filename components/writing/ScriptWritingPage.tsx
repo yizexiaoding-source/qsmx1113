@@ -193,7 +193,7 @@ const ScriptWritingPage: React.FC<ScriptWritingPageProps> = ({ script: initialSc
     // Model Config State
     const [temperature, setTemperature] = useState(1);
     const [topP, setTopP] = useState(0.95);
-    const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
+    const maxOutputTokens = 32768;
     const [showModelConfig, setShowModelConfig] = useState(false);
     
     // Generation Mode & State
@@ -956,11 +956,7 @@ ${FORCE_LONG_INSTRUCTION}`;
                                     <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                     <p className="text-[9px] text-gray-400 mt-0.5">控制词汇多样性：降低该值可减少偏门词汇的出现。</p>
                                 </div>
-                                <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-sky-600 dark:text-sky-400 flex justify-between"><span>最大长度 (Tokens): {maxOutputTokens}</span></label>
-                                    <input type="range" min="1024" max="32768" step="1024" value={maxOutputTokens} onChange={e => setMaxOutputTokens(parseInt(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
-                                    <p className="text-[9px] text-gray-400 mt-0.5">限制单次请求生成的最大文本量（包括标点和换行）。</p>
-                                </div>
+
                             </div>
                         )}
                     </div>

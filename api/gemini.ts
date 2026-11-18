@@ -1,3 +1,4 @@
+import { geminiStream } from '../lib/geminiStream';
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 export const config = {
@@ -237,106 +238,12 @@ export default async function handler(request: Request) {
         }
       });
 
-      const encoder = new TextEncoder();
-      const readable = new ReadableStream({
-        async start(controller) {
-          let wroteAnyText = false;
-          let lastFinishReason = "";
-          try {
-            const iterator = responseStream[Symbol.asyncIterator]();
-            while (true) {
-              const iterResult = await withTimeout(
-                iterator.next(),
-                45000,
-                `Stream chunk ${resolvedModel}`
-              );
-              if (iterResult.done) break;
-              const chunk = iterResult.value;
-              if (chunk?.candidates?.[0]?.finishReason) {
-                lastFinishReason = String(chunk.candidates[0].finishReason);
-              }
-
-              let text = "";
-              if (Array.isArray(chunk?.candidates?.[0]?.content?.parts)) {
-                text = chunk.candidates[0].content.parts
-                  .filter((p: any) => typeof p?.text === "string" && !p?.thought)
-                  .map((p: any) => p.text)
-                  .join("");
-              }
-              if (!text) {
-                try {
-                  text = chunk?.text || "";
-                } catch {
-                  // Ignore getter error on blocked candidate
-                }
-              }
-
-              if (text) {
-                wroteAnyText = true;
-                controller.enqueue(encoder.encode(text));
-              }
-            }
-
-            if (!wroteAnyText) {
-              const upperReason = lastFinishReason.toUpperCase();
-              if (
-                upperReason.includes("SAFETY") ||
-                upperReason.includes("PROHIBITED") ||
-                upperReason.includes("BLOCK") ||
-                upperReason.includes("RECITATION")
-              ) {
-                controller.enqueue(
-                  encoder.encode(
-                    `⚠️ 当前生成请求触发了模型内容安全拦截（原因：${lastFinishReason}），未返回正文。请调整敏感冲突词汇或切换至其他模型后重试。`
-                  )
-                );
-              } else {
-                try {
-                  const fallbackResp = await withTimeout(
-                    ai.models.generateContent({
-                      model: resolvedModel,
-                      contents,
-                      config: buildGenerateConfig(resolvedModel, false, true, false),
-                    }),
-                    45000,
-                    `Non-stream fallback ${resolvedModel}`
-                  );
-                  const extracted = extractGeminiResponseText(fallbackResp);
-                  if (extracted.text) {
-                    controller.enqueue(encoder.encode(extracted.text));
-                  } else {
-                    controller.enqueue(
-                      encoder.encode(
-                        `⚠️ 模型未返回可见正文内容${extracted.finishReason ? `（结束状态：${extracted.finishReason}）` : ""}，请重试或切换其他模型。`
-                      )
-                    );
-                  }
-                } catch (fbErr: any) {
-                  controller.enqueue(
-                    encoder.encode(`⚠️ 模型响应中断：${String(fbErr?.message || fbErr).slice(0, 120)}`)
-                  );
-                }
-              }
-            }
-          } catch (streamErr: any) {
-            const msg = String(streamErr?.message || streamErr);
-            if (!wroteAnyText) {
-              controller.enqueue(encoder.encode(`⚠️ 流式响应异常：${msg.slice(0, 160)}`));
-            }
-          } finally {
-            try {
-              controller.close();
-            } catch {
-              // Ignore already closed controller
-            }
-          }
-        },
-      });
+      const readable = geminiStream(responseStream, body.stream_protocol === 'ndjson', request.signal);
 
       return new Response(readable, {
         headers: {
           ...CORS_HEADERS,
-          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Type": body.stream_protocol === 'ndjson' ? "application/x-ndjson" : "text/plain; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
           "X-Accel-Buffering": "no",
         },

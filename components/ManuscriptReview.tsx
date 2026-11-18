@@ -1,3 +1,4 @@
+import { splitReviewText, scrollToTextOffset, visibleTextOffset, visibleTextareaOffset, focusTextareaRange } from '../utils/reviewPosition';
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import mammoth from 'mammoth';
 import {
@@ -129,6 +130,22 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
     const bannerRef = useRef<HTMLDivElement>(null);
     const origScrollContainerRef = useRef<HTMLDivElement>(null);
     const imitScrollContainerRef = useRef<HTMLDivElement>(null);
+    const imitationEditorRef = useRef<HTMLTextAreaElement>(null);
+    const pendingReadingOffsetRef = useRef<number | null>(null);
+    const switchReviewView = (next: 'audit' | 'edit') => {
+        if (next === viewMode) return;
+        pendingReadingOffsetRef.current = viewMode === 'edit'
+            ? (imitationEditorRef.current ? visibleTextareaOffset(imitationEditorRef.current) : 0)
+            : (imitScrollContainerRef.current ? visibleTextOffset(imitScrollContainerRef.current) : 0);
+        if (viewMode === 'edit') setActiveLocate(null);
+        setViewMode(next);
+    };
+    const switchPalette = (next: 'issues' | 'similarity') => {
+        if (next === paletteMode) return;
+        pendingReadingOffsetRef.current = imitScrollContainerRef.current ? visibleTextOffset(imitScrollContainerRef.current) : 0;
+        setPaletteFilter('all');
+        setPaletteMode(next);
+    };
     const inlineToolbarRef = useRef<HTMLDivElement>(null);
     const fileInputOriginalRef = useRef<HTMLInputElement>(null);
     const fileInputImitationRef = useRef<HTMLInputElement>(null);
@@ -190,24 +207,23 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
         };
     }, [isDragging]);
 
-    // 点击卡片后自动滚动定位到左右两侧高亮片段
+    // Restore a character anchor instead of reusing scroll pixels across layouts.
     useEffect(() => {
-        if (!activeLocate) return;
-        const timer = setTimeout(() => {
-            if (activeLocate.origStart !== undefined && origScrollContainerRef.current) {
-                const origEl = origScrollContainerRef.current.querySelector('[data-locate-orig="true"]');
-                if (origEl) {
-                    origEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const frame = requestAnimationFrame(() => {
+            if (activeLocate?.origStart !== undefined && origScrollContainerRef.current) {
+                scrollToTextOffset(origScrollContainerRef.current, activeLocate.origStart);
+            }
+            const offset = activeLocate?.imitStart ?? pendingReadingOffsetRef.current;
+            if (offset !== null && offset !== undefined) {
+                if (viewMode === 'edit' && imitationEditorRef.current) {
+                    focusTextareaRange(imitationEditorRef.current, offset, activeLocate?.imitEnd ?? offset, !!activeLocate);
+                } else if (imitScrollContainerRef.current) {
+                    scrollToTextOffset(imitScrollContainerRef.current, offset);
                 }
             }
-            if (activeLocate.imitStart !== undefined && imitScrollContainerRef.current) {
-                const imitEl = imitScrollContainerRef.current.querySelector('[data-locate-imit="true"]');
-                if (imitEl) {
-                    imitEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-            }
-        }, 60);
-        return () => clearTimeout(timer);
+            pendingReadingOffsetRef.current = null;
+        });
+        return () => cancelAnimationFrame(frame);
     }, [activeLocate, viewMode, paletteMode]);
 
     const handleToggleCollapse = () => {
@@ -442,6 +458,8 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
 
     const handleImitationTextEdit = (nextText: string) => {
         setImitationText(nextText);
+        // Reviewed ranges refer to the previous text; never select a stale issue after edits.
+        setActiveLocate(null);
         if (report) {
             setReport(syncReportWithUpdatedImitation(nextText, report));
         }
@@ -1451,7 +1469,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
         side: 'orig' | 'imit'
     ) => {
         if (segments.length === 0) {
-            return <span className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700 dark:text-slate-300">{text}</span>;
+            return <span data-text-start={0} data-text-end={text.length} className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700 dark:text-slate-300">{text}</span>;
         }
 
         const nodes: React.ReactNode[] = [];
@@ -1459,7 +1477,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
         segments.forEach((seg, i) => {
             if (seg.start > cursor) {
                 nodes.push(
-                    <span key={`${side}-plain-${i}`} className="whitespace-pre-wrap">
+                    <span key={`${side}-plain-${i}`} data-text-start={cursor} data-text-end={seg.start} className="whitespace-pre-wrap">
                         {text.slice(cursor, seg.start)}
                     </span>
                 );
@@ -1474,10 +1492,13 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
             nodes.push(
                 <mark
                     key={`${side}-hl-${i}`}
+                    data-text-start={seg.start} data-text-end={seg.end}
                     data-locate-orig={side === 'orig' && seg.isFocused ? 'true' : undefined}
                     data-locate-imit={side === 'imit' && seg.isFocused ? 'true' : undefined}
                     title={seg.label}
                     onClick={() => {
+                        setActiveLocate({ id: seg.itemId || `${side}-${seg.start}`, level: seg.level,
+                            ...(side === 'imit' ? { imitStart: seg.start, imitEnd: seg.end } : { origStart: seg.start, origEnd: seg.end }) });
                         if (seg.itemTab) setActiveTab(seg.itemTab);
                         if (isCollapsed) setIsCollapsed(false);
                     }}
@@ -1491,7 +1512,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
 
         if (cursor < text.length) {
             nodes.push(
-                <span key={`${side}-tail`} className="whitespace-pre-wrap">
+                <span key={`${side}-tail`} data-text-start={cursor} data-text-end={text.length} className="whitespace-pre-wrap">
                     {text.slice(cursor)}
                 </span>
             );
@@ -1563,7 +1584,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                 <div className="flex items-center gap-1 bg-slate-200/80 dark:bg-slate-900 p-0.5 rounded-lg">
                     <button
                         type="button"
-                        onClick={() => setPaletteMode('issues')}
+                        onClick={() => switchPalette('issues')}
                         className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
                             paletteMode === 'issues'
                                 ? 'bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-300 shadow-xs'
@@ -1574,7 +1595,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                     </button>
                     <button
                         type="button"
-                        onClick={() => setPaletteMode('similarity')}
+                        onClick={() => switchPalette('similarity')}
                         className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
                             paletteMode === 'similarity'
                                 ? 'bg-white dark:bg-slate-700 text-sky-600 dark:text-sky-300 shadow-xs'
@@ -1681,7 +1702,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
 
                     <button
                         type="button"
-                        onClick={() => setViewMode('edit')}
+                        onClick={() => switchReviewView('edit')}
                         className="px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-semibold transition"
                     >
                         直接修改正文
@@ -1995,7 +2016,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                                 <div className="h-7 p-0.5 bg-slate-200/90 dark:bg-slate-800 rounded-md inline-flex items-center flex-shrink-0">
                                     <button
                                         type="button"
-                                        onClick={() => setViewMode('audit')}
+                                        onClick={() => switchReviewView('audit')}
                                         className={`h-6 px-2 rounded text-xs leading-none transition inline-flex items-center justify-center gap-1 whitespace-nowrap ${
                                             viewMode === 'audit'
                                                 ? 'bg-white dark:bg-slate-700 text-sky-600 dark:text-sky-300 shadow-xs font-bold'
@@ -2007,7 +2028,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => setViewMode('edit')}
+                                        onClick={() => switchReviewView('edit')}
                                         className={`h-6 px-2 rounded text-xs leading-none transition inline-flex items-center justify-center gap-1 whitespace-nowrap ${
                                             viewMode === 'edit'
                                                 ? 'bg-white dark:bg-slate-700 text-sky-600 dark:text-sky-300 shadow-xs font-bold'
@@ -2091,11 +2112,12 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                                         {renderSegmentsContent(imitationText, imitationIssueSegments, 'imit')}
                                     </div>
                                 ) : (
-                                    <div className="p-4 bg-slate-50/50 dark:bg-slate-900/30 rounded-xl border border-slate-200/80 dark:border-slate-800 leading-relaxed text-sm space-y-2">
-                                        {report.sentenceSimilarities.map((item, idx) => {
-                                            if (paletteFilter !== 'all' && item.colorLevel !== paletteFilter) {
-                                                return null;
-                                            }
+                                    <div className="p-4 bg-slate-50/50 dark:bg-slate-900/30 rounded-xl border border-slate-200/80 dark:border-slate-800 leading-relaxed text-sm whitespace-pre-wrap">
+                                        {splitReviewText(imitationText, report.sentenceSimilarities).map((part) => {
+                                            if (part.sentenceIndex === undefined) return <span key={`gap-${part.start}`} data-text-start={part.start} data-text-end={part.end}>{imitationText.slice(part.start, part.end)}</span>;
+                                            const idx = part.sentenceIndex;
+                                            const item = report.sentenceSimilarities[idx];
+                                            const filtered = paletteFilter !== 'all' && item.colorLevel !== paletteFilter;
 
                                             let styleClasses = 'px-1 py-0.5 rounded transition cursor-pointer ';
                                             if (item.colorLevel === 'danger') {
@@ -2113,26 +2135,27 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                                             return (
                                                 <span
                                                     key={`sent-${idx}`}
-                                                    data-locate-imit={activeLocate?.imitStart === item.startIndex ? 'true' : undefined}
+                                                    data-text-start={part.start} data-text-end={part.end}
+                                                    data-locate-imit={activeLocate?.imitStart !== undefined && activeLocate.imitStart >= part.start && activeLocate.imitStart < part.end ? 'true' : undefined}
                                                     onClick={() => {
                                                         setSelectedSentenceIndex(isSelected ? null : idx);
                                                         setAiRewriteSuggestions([]);
                                                         setActiveTab('similarity');
-                                                        if (item.matchedOriginalSentence && item.matchedOriginalIndex !== undefined) {
+                                                        {
                                                             setActiveLocate({
                                                                 id: `sent-${idx}`,
                                                                 origStart: item.matchedOriginalIndex,
-                                                                origEnd: item.matchedOriginalIndex + item.matchedOriginalSentence.length,
+                                                                origEnd: item.matchedOriginalIndex !== undefined && item.matchedOriginalSentence ? item.matchedOriginalIndex + item.matchedOriginalSentence.length : undefined,
                                                                 imitStart: item.startIndex,
                                                                 imitEnd: item.endIndex,
                                                                 level: item.colorLevel === 'danger' ? 'danger' : 'warning'
                                                             });
                                                         }
                                                     }}
-                                                    className={`${styleClasses} ${isSelected ? 'ring-2 ring-sky-500 font-medium' : ''} inline-block mr-1 my-0.5`}
+                                                    className={`${styleClasses} ${isSelected ? 'ring-2 ring-sky-500 font-medium' : ''} whitespace-pre-wrap ${filtered ? 'opacity-25' : ''}`}
                                                     title={`相似度: ${Math.round(item.similarity * 100)}%${item.isLongDialogueOverlap ? ' [含15字+连续重复台词]' : ''} (点击查看原句对照与 AI 降重)`}
                                                 >
-                                                    {item.sentence}。
+                                                    {imitationText.slice(part.start, part.end)}
                                                 </span>
                                             );
                                         })}
@@ -2141,6 +2164,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                             </div>
                         ) : (
                             <textarea
+                                ref={imitationEditorRef}
                                 value={imitationText}
                                 onChange={(e) => handleImitationTextEdit(e.target.value)}
                                 placeholder="在此输入、粘贴仿写正文，或直接点击上方上传仿写文档（审稿后可随时在此直接修改正文，系统将同步高亮并支持局部增量复检）..."

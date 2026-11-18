@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { CREATIVE_MODULES } from '../constants';
 import CreativeCard from './CreativeCard';
 import { CreativeModule, Asset, Prompt } from '../types';
-import { generateTextStream, countContentChars } from '../services/geminiService';
+import { generateTextStream, countContentChars, GenerationInterrupted, resolveStoryTarget } from '../services/geminiService';
 import { ChevronDoubleLeft, Sparkles, Copy, Database, AdjustmentsHorizontal, Search, DocumentText, X, BookOpen, ChevronDown, Check, Stop, InformationCircle, ArrowPath, Play } from './Icon';
 import PromptSelectionModal from './PromptSelectionModal';
 import AssetSelectionModal from './AssetSelectionModal'; 
@@ -94,7 +94,12 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     const [model, setModel] = useState('deepseek-chat');
     const [temperature, setTemperature] = useState(1);
     const [topP, setTopP] = useState(0.95);
-    const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
+    const maxOutputTokens = 32768;
+    const [targetChars, setTargetChars] = useState(0);
+    const [generationStatus, setGenerationStatus] = useState('');
+    const [generationError, setGenerationError] = useState('');
+    const [canResume, setCanResume] = useState(false);
+    const taskOptionsRef = useRef<any>(null);
     const [showConfig, setShowConfig] = useState(false);
     const [selectedPrompt, setSelectedPrompt] = useState<Prompt | null>(null);
     const [formState, setFormState] = useState<Record<string, string>>({});
@@ -116,17 +121,6 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     const abortControllerRef = useRef<AbortController | null>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isUserScrollingRef = useRef(false);
-
-    // 判断文本是否被截断（非自然结尾）
-    const isLikelyTruncated = useMemo(() => {
-        if (!generatedText) return false;
-        const trimmed = generatedText.trim();
-        const endingPunctuation = /[.!?;:。”！？…—~】]$/;
-        // 如果没有标点结尾，极大概率是截断
-        if (!endingPunctuation.test(trimmed)) return true;
-        // 即使有标点结尾，如果字数较多，也可能是因为模型单次输出上限导致的“自然”截断，允许用户继续
-        return trimmed.length > 800; 
-    }, [generatedText]);
 
     useEffect(() => {
         if (initialData?.prompt) {
@@ -235,7 +229,8 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     };
 
     const handleGenerate = async () => {
-        if (isGenerating) { handleStop(); return; }
+        if (isGenerating) return;
+        setGenerationError(''); setCanResume(false); setGenerationStatus('正在生成');
         setIsGenerating(true);
         setIsWaitingForFirstChunk(true);
         isUserScrollingRef.current = false;
@@ -256,16 +251,11 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         // Append verbose instruction
         finalPrompt += FORCE_LONG_INSTRUCTION;
 
+        const requestOptions = { model, taskPrompt: basePrompt, temperature, topP, maxOutputTokens, targetChars: targetChars || resolveStoryTarget(basePrompt) || undefined, autoRecover: true, onStatus: setGenerationStatus };
+        taskOptionsRef.current = requestOptions;
         const controller = new AbortController(); abortControllerRef.current = controller;
         try {
-            const stream = generateTextStream(finalPrompt, { 
-                model, 
-                taskPrompt: basePrompt,
-                temperature, 
-                topP, 
-                maxOutputTokens, 
-                signal: controller.signal 
-            });
+            const stream = generateTextStream(finalPrompt, { ...requestOptions, signal: controller.signal });
             let first = true;
             let completedText = '';
             for await (const chunk of stream) {
@@ -285,7 +275,8 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         } catch (e: any) {
             if (!controller.signal.aborted && e?.message !== 'Aborted') {
                 const errMsg = e?.message || '生成请求异常，请重试或切换其他模型。';
-                setGeneratedText(prev => prev ? `${prev}\n\n⚠️ ${errMsg}` : `⚠️ ${errMsg}`);
+                setGenerationError(errMsg); setGenerationStatus('生成未完成');
+                setCanResume(e instanceof GenerationInterrupted && e.recoverable);
             }
         } finally {
             setIsGenerating(false);
@@ -295,57 +286,18 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     };
 
     const handleContinue = async () => {
-        if (isGenerating) return;
-        setIsGenerating(true);
-        isUserScrollingRef.current = false;
-        
-        // 关键修改：续写时必须带上原始 Prompt，确保 AI 知道自己在写什么（例如：是在写大纲还是正文）
-        // 否则 AI 容易忘记上下文，开始瞎编正文
-        const originalInstruction = lastPromptRef.current;
-        
-        // 取末尾 4000 字作为上下文衔接（增加窗口大小以提高连贯性）
-        const tailContext = generatedText.slice(-4000); 
-        
-        const continuePrompt = `【任务类型】：内容续写（接续上文）
-
-【原始创作任务指令】：
-${originalInstruction}
-
----
-
-【当前进度记录（即上文末尾内容）】：
-${tailContext}
-
----
-
-【续写指令】：
-1. **严格要求**：请直接从【当前进度记录】的最后一个字符开始，无缝地继续生成后续内容。
-2. **严禁重复**：绝对禁止重复上文已出现的内容或从头开始。
-3. **保持一致**：必须严格遵循【原始创作任务指令】中的所有要求（如：提示词卡片的设定、字数要求、文风、人称、逻辑、格式等）。
-4. **纯净输出**：直接输出续写正文，不要有任何关于“好的”、“继续生成”、“接上文”之类的开场白或解释语。
-
-${FORCE_LONG_INSTRUCTION}
-`;
-
-        const controller = new AbortController(); 
-        abortControllerRef.current = controller;
-
+        if (isGenerating || !taskOptionsRef.current) return;
+        setIsGenerating(true); setCanResume(false); setGenerationError('');
+        setGenerationStatus('正在接续同一篇正文');
+        const controller = new AbortController(); abortControllerRef.current = controller;
         try {
-            const stream = generateTextStream(continuePrompt, { 
-                model, 
-                temperature, 
-                topP, 
-                maxOutputTokens, 
-                signal: controller.signal 
-            });
-            for await (const chunk of stream) {
-                setGeneratedText(prev => prev + chunk);
-            }
-        } catch (e) {
-            console.error("Continue generation failed", e);
-        } finally { 
-            setIsGenerating(false); 
-        }
+            for await (const chunk of generateTextStream(lastPromptRef.current + FORCE_LONG_INSTRUCTION, {
+                ...taskOptionsRef.current, initialText: generatedText, signal: controller.signal
+            })) setGeneratedText(prev => prev + chunk);
+        } catch (e: any) {
+            setGenerationError(e.message || '恢复失败，草稿已保留'); setGenerationStatus('生成未完成');
+            setCanResume(e instanceof GenerationInterrupted && e.recoverable);
+        } finally { setIsGenerating(false); }
     };
 
     const handleImportAsset = (data: { name: string; type: Asset['type']; tags: string[]; content: string }) => {
@@ -376,7 +328,7 @@ ${FORCE_LONG_INSTRUCTION}
 
     return (
         <div className="h-full flex flex-col bg-gray-50 dark:bg-black overflow-hidden relative font-sans">
-            <LoadingOverlay isVisible={showLoadingOverlay} onClose={handleStop} />
+            <LoadingOverlay isVisible={showLoadingOverlay} onClose={() => setShowLoadingOverlay(false)} />
             <ImportAssetModal isOpen={importModalOpen} onClose={() => setImportModalOpen(false)} content={generatedText} onSave={handleImportAsset} />
             {promptModalOpen && <PromptSelectionModal isOpen={promptModalOpen} onClose={() => setPromptModalOpen(false)} onSelect={setSelectedPrompt} initialSubCategory={selectedModule.subCategories[0] as any} />}
             <AssetSelectionModal isOpen={assetModalOpen} onClose={() => setAssetModalOpen(false)} assets={assets} selectedAssetIds={selectedAssetIds} onToggleAsset={(id) => setSelectedAssetIds(prev => { const next = new Set(prev); if(next.has(id)) next.delete(id); else next.add(id); return next; })} />
@@ -433,15 +385,9 @@ ${FORCE_LONG_INSTRUCTION}
                                             </p>
                                         </div>
                                         <div className="space-y-2">
-                                            <label className="block text-[10px] font-black text-sky-400 flex justify-between uppercase">
-                                                <span>单次输出预算 (Tokens): {maxOutputTokens}</span>
-                                                <span className="text-sky-600 dark:text-sky-300">不是中文字数</span>
-                                            </label>
-                                            <input type="range" min="1024" max="65536" step="1024" value={maxOutputTokens} onChange={e => setMaxOutputTokens(parseInt(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
-                                            <p className="text-[10px] text-gray-400 leading-relaxed italic">
-                                                <InformationCircle className="w-3 h-3 inline mr-1" />
-                                                设置本次请求的输出 token 上限，不保证生成等量中文字；模型可能提前结束，思考也可能消耗预算。目标字数请写在任务里，例如“一万字”，验收范围为 9500～10500 字。
-                                            </p>
+                                            <label className="block text-xs font-bold">目标字数（可选）</label>
+                                            <input aria-label="目标字数" type="number" min="0" step="100" value={targetChars || ''} placeholder="不填则按任务要求生成" onChange={e => setTargetChars(Math.max(0, Math.floor(Number(e.target.value) || 0)))} className="w-full rounded-lg border p-2 text-sm bg-transparent" />
+                                            <p className="text-xs text-gray-500">{targetChars ? `合格范围：${Math.ceil(targetChars * .95)}～${Math.floor(targetChars * 1.05)} 字` : '按正文实际字数检查，不承诺固定输出篇幅。'}</p>
                                         </div>
                                     </div>
                                 )}
@@ -539,15 +485,15 @@ ${FORCE_LONG_INSTRUCTION}
                     </div>
 
                     <div className="p-2 border-t bg-white dark:bg-gray-900 font-sans">
-                        <button onClick={handleGenerate} className={`w-full py-2 rounded-2xl font-black text-white shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 ${isGenerating ? 'bg-rose-500 shadow-rose-500/20' : 'bg-sky-600 hover:bg-sky-50 shadow-sky-500/20'}`}>
-                            {isGenerating ? <><Stop className="w-5 h-5" />停止生成</> : <><Sparkles className="w-5 h-5" />开始创作</>}
+                        <button disabled={isGenerating} onClick={handleGenerate} className={`w-full py-2 rounded-2xl font-black text-white shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 ${isGenerating ? 'bg-rose-500 shadow-rose-500/20' : 'bg-sky-600 hover:bg-sky-50 shadow-sky-500/20'}`}>
+                            {isGenerating ? <><ArrowPath className="w-5 h-5 animate-spin" />正在创作</> : <><Sparkles className="w-5 h-5" />开始创作</>}
                         </button>
                     </div>
                 </div>
 
                 <div className="flex-1 bg-gray-50 dark:bg-black/50 flex flex-col overflow-hidden font-sans">
                     <div className="w-full bg-white dark:bg-gray-900 h-full shadow-sm flex flex-col relative overflow-hidden font-sans">
-                        {!generatedText && !isWaitingForFirstChunk ? (
+                        {!generatedText && !isWaitingForFirstChunk && !generationError ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-gray-400 opacity-50 p-8"><Sparkles className="w-20 h-20 mb-6" /><p className="text-lg font-medium">在左侧输入灵感，开启 AI 创作之旅</p></div>
                         ) : (
                             <>
@@ -567,6 +513,11 @@ ${FORCE_LONG_INSTRUCTION}
                                         <button onClick={() => setImportModalOpen(true)} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors font-sans"><Database className="w-4 h-4" /> 导入素材库</button>
                                     </div>
                                 </div>
+                                <div role="status" aria-live="polite" className="px-8 py-3 border-b text-sm text-sky-700 bg-sky-50 dark:bg-gray-800 dark:text-sky-300">
+                                    <div className="flex items-center gap-2">{isGenerating && <ArrowPath className="w-4 h-4 animate-spin" />}<span>{generationStatus} · 已生成 {countContentChars(generatedText)} 字{taskOptionsRef.current?.targetChars ? ` / 目标 ${taskOptionsRef.current.targetChars} 字` : ''}</span></div>
+                                    {taskOptionsRef.current?.targetChars > 0 && <progress aria-label="实际字数进度" className="w-full h-1 mt-2" max={taskOptionsRef.current.targetChars} value={Math.min(countContentChars(generatedText), taskOptionsRef.current.targetChars)} />}
+                                    {generationError && <p role="alert" className="mt-2 text-amber-700 dark:text-amber-300">{generationError}</p>}
+                                </div>
                                 <div className="flex-1 overflow-y-auto px-10 py-8 relative font-sans scroll-smooth" ref={scrollContainerRef} onScroll={handleScroll}>
                                     {isWaitingForFirstChunk && (
                                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 dark:bg-gray-900/60 backdrop-blur-sm z-10 animate-fade-in font-sans">
@@ -578,12 +529,12 @@ ${FORCE_LONG_INSTRUCTION}
                                     {/* Smart Continue/Regenerate Button */}
                                     {!isGenerating && generatedText && (
                                         <div className="mt-8 mb-4 flex justify-center animate-fade-in">
-                                            {isLikelyTruncated ? (
+                                            {canResume ? (
                                                 <button 
                                                     onClick={handleContinue}
                                                     className="px-6 py-2.5 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-full shadow-lg hover:shadow-sky-500/30 flex items-center gap-2 transition-all active:scale-95 text-sm"
                                                 >
-                                                    <Play className="w-4 h-4" /> 继续生成 (内容截断)
+                                                    <Play className="w-4 h-4" /> 继续生成
                                                 </button>
                                             ) : (
                                                 <button 

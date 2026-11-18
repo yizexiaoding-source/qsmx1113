@@ -136,7 +136,7 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                             color="sky"
                             steps={[
                                 "在首页选择任意一个创意模块卡片（如文风仿写、创意脑洞）",
-                                "配置左侧 AI 模型参数，长篇创作可将「最大长度」拉至 16384~32768",
+                                "选择模型并在创作任务中说明目标篇幅，生成后核对实际字数",
                                 "选择结构化提示词或关联角色库、剧情库素材",
                                 "点击“开始创作”，自动流式生成初稿或万字长篇"
                             ]}
@@ -342,7 +342,7 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                                     <Sparkles className="w-4 h-4 text-sky-500" /> 创意与万字仿写教程
                                 </h4>
                                 <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-                                    选取仿写或正文提示词后，点击「参数」将最大长度拉至 16384~32768，即使选用轻快模型（如 Gemini 4 Hydrogen）也能自动分幕无缝生成万字完整小说。
+                                    选取仿写或正文提示词后，填写目标字数。输出中断时会尝试接续同一篇正文；最终以实际字数和完成状态为准，不保证固定输出篇幅。
                                 </p>
                             </div>
                             <div className="bg-white dark:bg-gray-900 p-5 rounded-2xl border border-gray-100 dark:border-gray-800 space-y-2">
@@ -376,9 +376,20 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                         
                         <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 border border-gray-100 dark:border-gray-800 shadow-sm">
                             <VersionItem
-                                version="v1.9.1"
+                                version="v1.9.2"
                                 date="2026.11.18"
                                 isLatest={true}
+                                features={[
+                                    "创意生成中断恢复：识别正常结束、输出上限和连接中断，使用同一模型自动恢复最多 3 次；失败保留草稿并提供继续生成，不再静默切换模型。",
+                                    "字数展示：移除创作参数中的长度滑块，支持填写目标字数，展示实际字数与目标进度；错误与正文分开显示。",
+                                    "审稿定位：切换编辑正文自动选中问题文字，两种调色盘按原文位置定位；相似度视图保留原标点及段落。",
+                                    "密码重置：通过邮件链接进入设置新密码页面。"
+                                ]}
+                            />
+                            <VersionItem
+                                version="v1.9.1"
+                                date="2026.11.18"
+                                isLatest={false}
                                 features={[
                                     "单篇生成修复：取消为凑字数自动多次生成并拼接正文，加强同一故事约束，并检查明显的第二篇、完结后重开标记。",
                                     "真实字数验收：明确要求一万字时，接受 9500～10500 字；未达标会明确提示并保留草稿，不自动追加另一篇。字数统计去除空白、包含标点。",

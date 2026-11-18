@@ -53,7 +53,7 @@ const AIFunctionPanel: React.FC<AIFunctionPanelProps> = ({ contextText = '', sel
     const [model, setModel] = useState('deepseek-chat');
     const [temperature, setTemperature] = useState(1);
     const [topP, setTopP] = useState(0.95);
-    const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
+    const maxOutputTokens = 32768;
     const [showConfig, setShowConfig] = useState(false);
     const [isConfigCollapsed, setIsConfigCollapsed] = useState(false);
     
@@ -395,10 +395,7 @@ ${FORCE_LONG_INSTRUCTION}
                                             <label className="block font-bold text-gray-700 dark:text-gray-300 flex justify-between"><span>核采样 (Top P): {topP}</span></label>
                                             <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                         </div>
-                                        <div className="space-y-1">
-                                            <label className="block font-bold text-gray-700 dark:text-gray-300 flex justify-between"><span>最大长度 (Tokens): {maxOutputTokens}</span></label>
-                                            <input type="range" min="1024" max="32768" step="1024" value={maxOutputTokens} onChange={e => setMaxOutputTokens(parseInt(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
-                                        </div>
+
                                     </div>
                                 )}
                             </div>

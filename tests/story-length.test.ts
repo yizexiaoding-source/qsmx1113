@@ -24,7 +24,7 @@ test('single story and actual length acceptance', async () => {
         await assert.rejects(generateText('任务', options), /单篇检查/);
         // Streamed short output is a draft, never silently followed by a second request.
         calls = 0;
-        globalThis.fetch = async () => { calls++; return new Response('data: '+JSON.stringify({text:'甲'.repeat(5000)})+'\n\ndata: [DONE]\n\n', {headers:{'Content-Type':'text/event-stream'}}); };
+        globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({type:'text',text:'甲'.repeat(5000)})+'\n'+JSON.stringify({type:'finish',reason:'STOP'})+'\n', {headers:{'Content-Type':'application/x-ndjson'}}); };
         await assert.rejects(async () => { for await (const _ of generateTextStream('任务', options)) {} }, /验收范围/);
         assert.equal(calls, 1);
     } finally { globalThis.fetch = originalFetch; }

@@ -156,7 +156,7 @@ const WorkflowRun: React.FC<WorkflowRunProps> = ({ workflow, onBack }) => {
     const modelRef = useRef(model);
     const [temperature, setTemperature] = useState(0.8);
     const [topP, setTopP] = useState(0.95);
-    const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
+    const maxOutputTokens = 32768;
     const [showConfig, setShowConfig] = useState(true);
 
     const [formState, setFormState] = useState<Record<string, string>>({});
@@ -519,12 +519,6 @@ ${FORCE_LONG_INSTRUCTION}
                                             onChange={setModel} 
                                             options={MODEL_OPTIONS}
                                         />
-                                    </div>
-                                    <div className="space-y-1">
-                                        <label className="block text-[10px] font-black text-sky-500 flex justify-between">
-                                            <span>最大长度: {maxOutputTokens}</span>
-                                        </label>
-                                        <input type="range" min="1024" max="32768" step="1024" value={maxOutputTokens} onChange={e => setMaxOutputTokens(parseInt(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                     </div>
                                     <div className="space-y-1">
                                         <label className="block text-[10px] font-black text-sky-500 flex justify-between">

@@ -89,7 +89,7 @@ async function startServer() {
           const isJsonCall = Boolean(responseMimeType && String(responseMimeType).includes("json"));
           cfg.maxOutputTokens = isJsonCall
             ? Math.min(65536, max_tokens)
-            : Math.min(65536, Math.max(max_tokens, Math.round(max_tokens * 1.25)));
+            : Math.min(65536, max_tokens);
         }
         // Do not pass deprecated sampling parameters (temperature, topP, topK, candidateCount) to gemini-4-*
         if (!targetModel.startsWith("gemini-4-")) {
@@ -454,7 +454,7 @@ async function startServer() {
           "Authorization": `Bearer ${apiKey}`,
           "Accept": "application/json",
         },
-        body: JSON.stringify({ ...req.body, model: req.body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017", enable_thinking: req.body.model === "deepseek-reasoner" }),
+        body: JSON.stringify({ ...req.body, model: req.body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017", enable_thinking: req.body.model === "deepseek-reasoner", max_tokens: typeof req.body.max_tokens === "number" ? Math.max(1, Math.min(Math.floor(req.body.max_tokens), 65536)) : req.body.max_tokens }),
         signal: AbortSignal.timeout(45000),
       });
 

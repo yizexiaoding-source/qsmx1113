@@ -195,7 +195,7 @@ export default async function handler(request: Request) {
         const isJsonCall = Boolean(responseMimeType && String(responseMimeType).includes("json"));
         cfg.maxOutputTokens = isJsonCall
           ? Math.min(65536, max_tokens)
-          : Math.min(65536, Math.max(max_tokens, Math.round(max_tokens * 1.25)));
+          : Math.min(65536, max_tokens);
       }
       if (!targetModel.startsWith("gemini-4-")) {
         if (typeof temperature === "number") cfg.temperature = temperature;

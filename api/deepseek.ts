@@ -47,7 +47,7 @@ export default async function handler(request: Request) {
       ...body,
       model: body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017",
       enable_thinking: body.model === "deepseek-reasoner",
-      max_tokens: typeof body.max_tokens === "number" ? Math.min(body.max_tokens, 8192) : body.max_tokens,
+      max_tokens: typeof body.max_tokens === "number" ? Math.max(1, Math.min(Math.floor(body.max_tokens), 65536)) : body.max_tokens,
     };
 
     const response = await fetch(`${baseURL}/chat/completions`, {

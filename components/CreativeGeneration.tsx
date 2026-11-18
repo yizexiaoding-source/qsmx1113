@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { CREATIVE_MODULES } from '../constants';
 import CreativeCard from './CreativeCard';
 import { CreativeModule, Asset, Prompt } from '../types';
-import { generateTextStream } from '../services/geminiService';
+import { generateTextStream, countContentChars } from '../services/geminiService';
 import { ChevronDoubleLeft, Sparkles, Copy, Database, AdjustmentsHorizontal, Search, DocumentText, X, BookOpen, ChevronDown, Check, Stop, InformationCircle, ArrowPath, Play } from './Icon';
 import PromptSelectionModal from './PromptSelectionModal';
 import AssetSelectionModal from './AssetSelectionModal'; 
@@ -260,22 +260,25 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         try {
             const stream = generateTextStream(finalPrompt, { 
                 model, 
+                taskPrompt: basePrompt,
                 temperature, 
                 topP, 
                 maxOutputTokens, 
                 signal: controller.signal 
             });
             let first = true;
+            let completedText = '';
             for await (const chunk of stream) {
                 if (first) { 
                     setShowLoadingOverlay(false); 
                     setIsWaitingForFirstChunk(false);
                     first = false; 
                 }
+                completedText += chunk;
                 setGeneratedText(prev => prev + chunk);
             }
             if (!controller.signal.aborted) {
-                setSuccessMessage('生成完毕');
+                setSuccessMessage(`生成完成 · 实际 ${countContentChars(completedText)} 字`);
                 setShowInlineSuccess(true);
                 setTimeout(() => setShowInlineSuccess(false), 3000);
             }
@@ -431,13 +434,13 @@ ${FORCE_LONG_INSTRUCTION}
                                         </div>
                                         <div className="space-y-2">
                                             <label className="block text-[10px] font-black text-sky-400 flex justify-between uppercase">
-                                                <span>最大长度 (Max Tokens): {maxOutputTokens}</span>
-                                                <span className="text-sky-600 dark:text-sky-300">{maxOutputTokens >= 12288 ? `长篇直出 ≈ ${maxOutputTokens >= 28672 ? '1.2万+' : maxOutputTokens >= 20480 ? '1万' : maxOutputTokens >= 16384 ? '8500' : '6500'}字` : '常规篇幅'}</span>
+                                                <span>单次输出预算 (Tokens): {maxOutputTokens}</span>
+                                                <span className="text-sky-600 dark:text-sky-300">不是中文字数</span>
                                             </label>
-                                            <input type="range" min="1024" max="32768" step="1024" value={maxOutputTokens} onChange={e => setMaxOutputTokens(parseInt(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                            <input type="range" min="1024" max="65536" step="1024" value={maxOutputTokens} onChange={e => setMaxOutputTokens(parseInt(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                             <p className="text-[10px] text-gray-400 leading-relaxed italic">
                                                 <InformationCircle className="w-3 h-3 inline mr-1" />
-                                                控制生成内容的最大长度。拉高至 16384~32768 时将自动启用多幕无缝长篇直出（可达万字以上）。
+                                                设置本次请求的输出 token 上限，不保证生成等量中文字；模型可能提前结束，思考也可能消耗预算。目标字数请写在任务里，例如“一万字”，验收范围为 9500～10500 字。
                                             </p>
                                         </div>
                                     </div>

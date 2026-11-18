@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Check, Sparkles, ClipboardDocumentCheck, AdjustmentsHorizontal } from './Icon';
 
-const CURRENT_VERSION = 'v1.9.0';
+const CURRENT_VERSION = 'v1.9.1';
 const STORAGE_KEY = `qisimiaoxie_version_seen_${CURRENT_VERSION}`;
 
 const VersionUpdateModal: React.FC = () => {
@@ -30,7 +30,8 @@ const VersionUpdateModal: React.FC = () => {
                 
                 <div className="p-6 relative">
                     <button 
-                        onClick={handleClose} 
+                        onClick={handleClose}
+                        aria-label="关闭更新通知"
                         className="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors z-10"
                     >
                         <X className="w-5 h-5" />
@@ -46,7 +47,7 @@ const VersionUpdateModal: React.FC = () => {
                                 奇思妙写 <span className="text-indigo-600 dark:text-indigo-400">{CURRENT_VERSION}</span>
                             </h2>
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-bold tracking-wide">
-                                2026.11.13 · 全文语义审稿与万字长篇直出升级
+                                2026.11.18 · 单篇生成与真实字数校验
                             </p>
                         </div>
                     </div>
@@ -56,10 +57,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <ClipboardDocumentCheck className="w-4 h-4 text-indigo-500" />
-                                AI 全文语义审稿 · 待核对与冲突忽略
+                                一次创作，围绕同一个故事
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                结合双栏完整语境精准识别真实人物与别名归并、人设前后一致性、上下文错别字及高相似桥段；支持存疑角色人工「确认为人物 / 不是人物 / 修改」、同音换序冲突「忽略 / 取消忽略」，并区分「重试失败部分」与「局部复检变更」。
+                                取消为凑字数自动多次生成、拼接正文。加强单篇故事约束，检查明显的第二篇或完结后重开标记，避免一次任务混入两篇独立内容。
                             </p>
                         </div>
 
@@ -67,10 +68,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <AdjustmentsHorizontal className="w-4 h-4 text-sky-500" />
-                                审稿悬浮折叠工具栏 &amp; 精简汇总栏
+                                目标字数，按实际正文验收
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                向下滚动仿写正文离开原工具栏时，右上角自动浮现轻量展开入口，随时切换「审稿问题高亮 / 相似度调色盘」且不改变阅读滚动位置；顶部汇总栏精简为「整体相似度｜审稿耗时」，视野更开阔。
+                                要求一万字时，接受 9500～10500 字。生成完成后显示实际字数；不足或超出范围会明确提示并保留草稿，不再自动追加另一篇。统计去除空白、包含标点。
                             </p>
                         </div>
 
@@ -78,10 +79,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
                             <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-300 mb-1.5 flex items-center gap-2">
                                 <Sparkles className="w-4 h-4" />
-                                流式秒级响应 &amp; 3.1 万字仿写多幕直出
+                                输出预算更透明
                             </h3>
                             <p className="text-xs text-indigo-900 dark:text-indigo-200 leading-relaxed">
-                                全面修复历史 3.5 模型及流式长考无响应问题；各创作面板「最大长度」滑块上限提升至 <span className="font-bold">32768</span>，使用 Gemini 4 Hydrogen 等模型拉高滑块生成仿写或长篇正文时，自动启用多幕无缝接力直出万字长文。
+                                创作页输出预算最高 <span className="font-bold">65536 token</span>，移除原先 8192 token 的代码限制和“约 1.2 万字”的估算。Token 是模型输出预算，不是中文字数，也不保证模型一定用满；实际输出受所选模型影响。
                             </p>
                         </div>
                     </div>

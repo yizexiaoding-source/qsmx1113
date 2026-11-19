@@ -1,4 +1,5 @@
 import { geminiStream } from './lib/geminiStream';
+import { deepseekStream } from './lib/deepseekStream';
 import express from "express";
 import path from "path";
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
@@ -234,9 +235,15 @@ async function startServer() {
 
         res.setHeader("Content-Type", req.body.stream_protocol === 'ndjson' ? "application/x-ndjson" : "text/plain; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.setHeader("X-Model-Used", resolvedModel);
         res.flushHeaders();
         const reader = geminiStream(responseStream, req.body.stream_protocol === 'ndjson').getReader();
-        res.on('close', () => { void reader.cancel(); });
+        res.on('close', () => {
+          if (!res.writableEnded) {
+            void reader.cancel().catch(() => {});
+          }
+        });
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -376,43 +383,108 @@ async function startServer() {
   app.post("/api/deepseek", async (req, res) => {
     try {
       const apiKey = process.env.DASHSCOPE_API_KEY;
+      const baseURL = process.env.DASHSCOPE_BASE_URL?.trim().replace(/\/$/, "");
 
-      if (!apiKey || !process.env.DASHSCOPE_BASE_URL) {
+      if (!apiKey || !baseURL) {
         return res.status(500).json({ error: "百炼配置缺失" });
       }
 
-      const upstreamController = new AbortController();
-      res.on('close', () => upstreamController.abort());
-      const response = await fetch(`${process.env.DASHSCOPE_BASE_URL?.trim().replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-          "Accept": "application/json",
-        },
-        body: JSON.stringify({ ...req.body, model: req.body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017", enable_thinking: req.body.model === "deepseek-reasoner", max_tokens: typeof req.body.max_tokens === "number" ? Math.max(1, Math.min(Math.floor(req.body.max_tokens), 65536)) : req.body.max_tokens }),
-        signal: upstreamController.signal,
+      const isStream = Boolean(req.body?.stream);
+      const safeBody = {
+        ...req.body,
+        model: req.body.model === "qwen3.8-flash" ? "qwen3.8-flash" : "deepseek-v4.1-flash-1017",
+        enable_thinking: req.body.model === "deepseek-reasoner",
+        max_tokens: typeof req.body.max_tokens === "number" ? Math.max(1, Math.min(Math.floor(req.body.max_tokens), 65536)) : req.body.max_tokens,
+      };
+
+      let clientDisconnected = false;
+      let upstreamController = new AbortController();
+      let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          clientDisconnected = true;
+          upstreamController.abort();
+          void streamReader?.cancel().catch(() => {});
+        }
       });
 
-      res.status(response.status);
-      res.setHeader("Content-Type", response.headers.get("Content-Type") || "application/json");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.setHeader("Access-Control-Allow-Origin", "*");
+      let response: Response | null = null;
+      let lastFetchErr: any = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (clientDisconnected) return;
+        upstreamController = new AbortController();
+        const connectTimer = setTimeout(() => upstreamController.abort(), 45000);
+        try {
+          response = await fetch(`${baseURL}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`,
+              "Accept": isStream ? "text/event-stream" : "application/json",
+            },
+            body: JSON.stringify(safeBody),
+            signal: upstreamController.signal,
+          });
+          clearTimeout(connectTimer);
+          if (response.ok || ![502, 503, 504].includes(response.status) || attempt === 1) {
+            break;
+          }
+          await response.body?.cancel();
+        } catch (err: any) {
+          clearTimeout(connectTimer);
+          lastFetchErr = err;
+          if (clientDisconnected || attempt === 1) throw err;
+        }
+        await new Promise((r) => setTimeout(r, 800));
+      }
 
-      if (response.body) {
-        const reader = response.body.getReader();
+      if (!response) {
+        throw lastFetchErr || new Error("百炼上游连接失败");
+      }
+
+      if (!response.ok) {
+        const errRaw = await response.text().catch(() => "");
+        let detail = "";
+        try {
+          const parsed = JSON.parse(errRaw);
+          const msg = parsed?.error?.message || parsed?.message || (typeof parsed?.error === "string" ? parsed.error : "");
+          if (typeof msg === "string") detail = msg.replace(/https?:\/\/\S+/gi, "").trim().slice(0, 140);
+        } catch {}
+        return res.status(response.status).json({
+          error: detail ? `百炼调用失败（${response.status}）：${detail}` : `百炼调用失败（${response.status}），请核对密钥、模型权限和额度`,
+        });
+      }
+
+      if (isStream && response.body) {
+        res.status(response.status);
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.setHeader("X-Model-Used", safeBody.model);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.flushHeaders();
+
+        streamReader = deepseekStream(response.body, () => upstreamController.abort()).getReader();
         while (true) {
-          const { done, value } = await reader.read();
+          const { done, value } = await streamReader.read();
           if (done) break;
           res.write(value);
         }
+        res.end();
+        return;
       }
-      res.end();
+
+      const textBody = await response.text();
+      res.status(response.status);
+      res.setHeader("Content-Type", response.headers.get("Content-Type") || "application/json");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.send(textBody);
     } catch (error: any) {
       console.error("DeepSeek API Error inside Express:", error);
       if (res.headersSent) {
         try {
+          res.write(`\n\ndata: ${JSON.stringify({ error: { message: "百炼模型连接中断，草稿已保留", recoverable: true } })}\n\n`);
           res.end();
         } catch {}
         return;

@@ -238,7 +238,7 @@ export default async function handler(request: Request) {
         }
       });
 
-      const readable = geminiStream(responseStream, body.stream_protocol === 'ndjson', request.signal);
+      const readable = geminiStream(responseStream, body.stream_protocol === 'ndjson');
 
       return new Response(readable, {
         headers: {
@@ -246,6 +246,7 @@ export default async function handler(request: Request) {
           "Content-Type": body.stream_protocol === 'ndjson' ? "application/x-ndjson" : "text/plain; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
           "X-Accel-Buffering": "no",
+          "X-Model-Used": resolvedModel,
         },
       });
     } else {

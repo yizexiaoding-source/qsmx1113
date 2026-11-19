@@ -12,6 +12,7 @@ interface GenerationOptions {
     stageTargetChars?: number;
     initialText?: string;
     onStatus?: (status: string) => void;
+    onModelUsed?: (modelUsed: string) => void;
 }
 
 // Old saved Gemini choices migrate to Gemini 4 Hydrogen.
@@ -356,10 +357,21 @@ async function* generateSingleTextStream(prompt: string, options: GenerationOpti
         throw new GenerationInterrupted('连接中断或响应超时，草稿已保留', 'network');
     } finally { connect.cleanup(); }
     if (!response.ok) {
-        await response.body?.cancel();
-        throw new GenerationInterrupted(`模型请求失败（${response.status}），草稿已保留`, 'network', [408, 500, 502, 503, 504].includes(response.status));
+        const errText = await response.text().catch(() => '');
+        let detail = '';
+        try {
+            const parsed = JSON.parse(errText);
+            if (typeof parsed?.error === 'string') detail = parsed.error.slice(0, 120);
+        } catch {}
+        const fatalConfig = /配置|密钥|权限|额度|invalid_api_key|insufficient_quota/i.test(detail);
+        throw new GenerationInterrupted(
+            `模型请求失败（${response.status}${detail ? `：${detail}` : ''}），草稿已保留`,
+            'network',
+            !fatalConfig && [408, 429, 500, 502, 503, 504].includes(response.status)
+        );
     }
     if (!response.body) throw new GenerationInterrupted('未收到模型响应', 'network');
+    options.onModelUsed?.(response.headers.get('X-Model-Used') || model);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', finish = '', any = false, inThought = false;
@@ -384,10 +396,18 @@ async function* generateSingleTextStream(prompt: string, options: GenerationOpti
                     const raw = line.trim();
                     if (!raw || (!structured && !raw.startsWith('data:'))) continue;
                     const payload = structured ? raw : raw.slice(5).trim();
-                    if (payload === '[DONE]') continue;
+                    if (!payload) continue;
+                    if (payload === '[DONE]') {
+                        if (!structured && !finish) finish = 'STOP';
+                        continue;
+                    }
                     let event: any;
                     try { event = JSON.parse(payload); } catch { throw new GenerationInterrupted('响应数据中断，草稿已保留', 'network'); }
-                    if (event.error || event.type === 'error') throw new GenerationInterrupted(event.message || '模型响应中断', 'network', event.recoverable !== false);
+                    if (event.error || event.type === 'error') {
+                        const errMsg = (typeof event.error === 'string' ? event.error : event.error?.message) || event.message || '模型响应中断';
+                        const rec = event.error?.recoverable ?? event.recoverable;
+                        throw new GenerationInterrupted(errMsg, 'network', rec !== false);
+                    }
                     if (event.type === 'finish') finish = event.reason;
                     const choice = event.choices?.[0];
                     if (choice?.finish_reason) finish = choice.finish_reason;
@@ -403,13 +423,14 @@ async function* generateSingleTextStream(prompt: string, options: GenerationOpti
             }
             if (done) break;
         }
-        if (!any) throw new GenerationInterrupted('模型未返回正文', 'blocked', false);
         const reason = finish.toUpperCase();
         if (['MAX_TOKENS', 'LENGTH'].includes(reason)) throw new GenerationInterrupted('达到本次输出上限', 'length');
+        if (!any) throw new GenerationInterrupted('模型未返回正文', 'blocked', false);
         if (!['STOP', 'END_TURN'].includes(reason)) throw new GenerationInterrupted(reason && reason !== 'UNKNOWN' ? '模型未正常结束，草稿已保留' : '连接结束但未收到完成确认，草稿已保留', reason && reason !== 'UNKNOWN' ? 'blocked' : 'network', !reason || reason === 'UNKNOWN');
     } catch (error: any) {
         if (options.signal?.aborted || error.message === 'Aborted') throw new Error('Aborted');
         if (error instanceof GenerationInterrupted) throw error;
+        console.warn('[Stream interrupted]', error);
         throw new GenerationInterrupted('连接中断，草稿已保留', 'network');
     } finally {
         options.signal?.removeEventListener('abort', onAbort);

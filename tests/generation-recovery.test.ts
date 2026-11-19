@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateTextStream, continuationText } from '../services/geminiService.ts';
 import { geminiStream } from '../lib/geminiStream.ts';
+import { deepseekStream } from '../lib/deepseekStream.ts';
 const opts = { model: 'gemini-4-hydrogen', temperature: 1, topP: .9, autoRecover: true };
 function response(text: string, reason?: string) {
     return new Response(JSON.stringify({type:'text',text})+'\n'+(reason ? JSON.stringify({type:'finish',reason})+'\n' : ''), {headers:{'Content-Type':'application/x-ndjson'}});
@@ -28,7 +29,69 @@ test('stream completion, bounded recovery, same model and full draft context', a
 test('provider errors stay out of正文 and never switch to Gemini',async()=>{
     const saved=globalThis.fetch; const urls: string[]=[];let draft='';
     globalThis.fetch=async(url)=>{urls.push(String(url));return new Response('data: '+JSON.stringify({choices:[{delta:{content:'已有正文'}}]})+'\n\ndata: '+JSON.stringify({error:{message:'failed'}})+'\n\n',{headers:{'Content-Type':'text/event-stream'}});};
-    try { await assert.rejects(async()=>{for await(const x of generateTextStream('任务',{...opts,model:'deepseek-chat',autoRecover:false}))draft+=x;});assert.equal(draft,'已有正文');assert.deepEqual(urls,['/api/deepseek']); }finally{globalThis.fetch=saved;}
+    try { await assert.rejects(async()=>{for await(const x of generateTextStream('任务',{...opts,model:'deepseek-chat',autoRecover:false}))draft+=x;},/failed/);assert.equal(draft,'已有正文');assert.deepEqual(urls,['/api/deepseek']); }finally{globalThis.fetch=saved;}
+});
+test('deepseekStream converts mid-stream error into recoverable SSE error event and passes through chunks', async () => {
+    const encoder = new TextEncoder();
+    let step = 0;
+    const upstream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+            if (step === 0) {
+                step++;
+                controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content: '第一段' } }] }) + '\n\n'));
+            } else {
+                controller.error(new Error('tcp reset'));
+            }
+        }
+    });
+    const out = await new Response(deepseekStream(upstream)).text();
+    assert.match(out, /第一段/);
+    assert.match(out, /"recoverable":true/);
+    assert.match(out, /百炼模型连接中断/);
+});
+test('qwen and deepseek streams tolerate ping comments, handle length truncation, and surface HTTP error details', async () => {
+    const saved = globalThis.fetch;
+    try {
+        let count = 0;
+        globalThis.fetch = async () => {
+            count++;
+            if (count === 1) {
+                return new Response(
+                    ': ping\n\ndata: ' + JSON.stringify({ choices: [{ delta: { content: '上半部分' }, finish_reason: 'length' }] }) + '\n\ndata: [DONE]\n\n',
+                    { headers: { 'Content-Type': 'text/event-stream' } }
+                );
+            }
+            return new Response(
+                ': ping\n\ndata: ' + JSON.stringify({ choices: [{ delta: { content: '下半部分。' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n',
+                { headers: { 'Content-Type': 'text/event-stream' } }
+            );
+        };
+        const result = await collect({ ...opts, model: 'qwen3.8-flash' });
+        assert.equal(result, '上半部分下半部分。');
+        assert.equal(count, 2);
+
+        let errorCalls = 0;
+        globalThis.fetch = async () => {
+            errorCalls++;
+            return new Response(JSON.stringify({ error: '百炼配置缺失' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        };
+        await assert.rejects(collect({ ...opts, model: 'deepseek-reasoner' }), /百炼配置缺失/);
+        assert.equal(errorCalls, 1);
+
+        globalThis.fetch = async () => new Response(
+            'data: ' + JSON.stringify({ choices: [{ delta: { content: '完整JSON方案' }, finish_reason: null }] }) + '\n\ndata: [DONE]\n\n',
+            { headers: { 'Content-Type': 'text/event-stream' } }
+        );
+        assert.equal(await collect({ ...opts, model: 'deepseek-chat', autoRecover: false }), '完整JSON方案');
+
+        globalThis.fetch = async () => new Response(
+            'data: ' + JSON.stringify({ choices: [{ delta: { content: '半截数据' }, finish_reason: null }] }) + '\n\n',
+            { headers: { 'Content-Type': 'text/event-stream' } }
+        );
+        await assert.rejects(collect({ ...opts, model: 'deepseek-chat', autoRecover: false }), /完成确认/);
+    } finally {
+        globalThis.fetch = saved;
+    }
 });
 test('continuation strips repeated boundary and rejects restarted story',()=>{
  const tail='这是一段已经生成且足够长的故事正文作为衔接。';
@@ -44,6 +107,9 @@ test('server protocol reports finish and partial failures separately',async()=>{
  const text=await new Response(geminiStream(source(),true)).text();
  const events=text.trim().split('\n').map(x=>JSON.parse(x));
  assert.deepEqual(events.map(x=>x.type),['text','error']);assert.equal(events[0].text,'正文');
- async function* stop(){yield {candidates:[{finishReason:'MAX_TOKENS',content:{parts:[{text:'片段'}]}}]};}
- const complete=await new Response(geminiStream(stop(),true)).text();assert.match(complete,/"reason":"MAX_TOKENS"/);
+ async function* stop(){
+  yield {candidates:[{finishReason:'STOP',content:{parts:[{text:'片段'}]}}]};
+  yield {candidates:[{finishReason:'FINISH_REASON_UNSPECIFIED',content:{parts:[]}}]};
+ }
+ const complete=await new Response(geminiStream(stop(),true)).text();assert.match(complete,/"reason":"STOP"/);
 });

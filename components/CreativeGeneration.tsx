@@ -6,13 +6,14 @@ import { CREATIVE_MODULES } from '../constants';
 import CreativeCard from './CreativeCard';
 import { CreativeModule, Asset, Prompt } from '../types';
 import { generateTextStream, countContentChars, GenerationInterrupted, resolveStoryTarget } from '../services/geminiService';
-import { ChevronDoubleLeft, Sparkles, Copy, Database, AdjustmentsHorizontal, Search, DocumentText, X, BookOpen, ChevronDown, Check, Stop, InformationCircle, ArrowPath, Play } from './Icon';
+import { ChevronDoubleLeft, Sparkles, Copy, Database, AdjustmentsHorizontal, Search, DocumentText, X, BookOpen, ChevronDown, Check, Stop, InformationCircle, ArrowPath, Play, CloudArrowUp, Trash } from './Icon';
 import PromptSelectionModal from './PromptSelectionModal';
 import AssetSelectionModal from './AssetSelectionModal'; 
 import { saveMaterial, incrementPromptHeat, fetchMaterials } from '../services/supabaseService';
 import LoadingOverlay from './LoadingOverlay';
 import ImportAssetModal from './ImportAssetModal';
 import CustomSelect from './CustomSelect';
+import { extractTextFromFile, isManuscriptField } from '../utils/fileText';
 
 interface CreativeGenerationProps {
   initialData?: {
@@ -119,6 +120,11 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     const [assets, setAssets] = useState<Asset[]>([]);
     const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
     
+    const [uploadedManuscriptInfo, setUploadedManuscriptInfo] = useState<Record<string, { name: string; chars: number }>>({});
+    const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+    const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
+    const manuscriptInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
     // 新增：用于存储上一次完整的 Prompt，以便在“继续生成”时保持上下文一致性
     const lastPromptRef = useRef<string>('');
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -186,6 +192,9 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
 
     const resetState = () => {
         setFormState({});
+        setUploadedManuscriptInfo({});
+        setUploadErrors({});
+        setUploadingFieldId(null);
         setFreeInput('');
         setGeneratedText('');
         setSelectedPrompt(null);
@@ -201,6 +210,12 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         }
     };
 
+    const handleSelectPrompt = (prompt: Prompt) => {
+        setSelectedPrompt(prompt);
+        setUploadedManuscriptInfo({});
+        setUploadErrors({});
+    };
+
     const handleSelectModule = (m: CreativeModule) => {
         resetState();
         setSelectedModule(m);
@@ -211,25 +226,41 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         setSelectedModule(null);
     };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, fieldId: string) => {
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, fieldId: string) => {
         if (e.target.files && e.target.files.length > 0) {
             const files = Array.from(e.target.files);
-            const readers = files.map((file: File) => {
-                return new Promise<string>((resolve) => {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                        resolve(`【文件: ${file.name}】\n${ev.target?.result as string}\n`);
-                    };
-                    reader.readAsText(file);
-                });
-            });
-
-            Promise.all(readers).then(contents => {
+            e.target.value = '';
+            setUploadErrors(prev => { const next = { ...prev }; delete next[fieldId]; return next; });
+            try {
+                const contents = await Promise.all(files.map(async (file: File) => {
+                    const text = await extractTextFromFile(file);
+                    return `【文件: ${file.name}】\n${text}\n`;
+                }));
                 setFormState(prev => ({
                     ...prev,
                     [fieldId]: (prev[fieldId] || '') + contents.join('\n')
                 }));
-            });
+            } catch (err: any) {
+                setUploadErrors(prev => ({ ...prev, [fieldId]: err?.message || '读取文件失败，请检查文件格式' }));
+            }
+        }
+    };
+
+    const handleManuscriptFileUpload = async (file: File | undefined, fieldId: string) => {
+        if (!file) return;
+        setUploadingFieldId(fieldId);
+        setUploadErrors(prev => { const next = { ...prev }; delete next[fieldId]; return next; });
+        try {
+            const text = await extractTextFromFile(file);
+            setFormState(prev => ({ ...prev, [fieldId]: text }));
+            setUploadedManuscriptInfo(prev => ({
+                ...prev,
+                [fieldId]: { name: file.name, chars: countContentChars(text) }
+            }));
+        } catch (err: any) {
+            setUploadErrors(prev => ({ ...prev, [fieldId]: err?.message || '上传原稿失败，请检查文件格式' }));
+        } finally {
+            setUploadingFieldId(null);
         }
     };
 
@@ -350,7 +381,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         <div className="h-full flex flex-col bg-gray-50 dark:bg-black overflow-hidden relative font-sans">
             <LoadingOverlay isVisible={showLoadingOverlay} onClose={() => setShowLoadingOverlay(false)} />
             <ImportAssetModal isOpen={importModalOpen} onClose={() => setImportModalOpen(false)} content={generatedText} onSave={handleImportAsset} />
-            {promptModalOpen && <PromptSelectionModal isOpen={promptModalOpen} onClose={() => setPromptModalOpen(false)} onSelect={setSelectedPrompt} initialSubCategory={selectedModule.subCategories[0] as any} />}
+            {promptModalOpen && <PromptSelectionModal isOpen={promptModalOpen} onClose={() => setPromptModalOpen(false)} onSelect={handleSelectPrompt} initialSubCategory={selectedModule.subCategories[0] as any} />}
             <AssetSelectionModal isOpen={assetModalOpen} onClose={() => setAssetModalOpen(false)} assets={assets} selectedAssetIds={selectedAssetIds} onToggleAsset={(id) => setSelectedAssetIds(prev => { const next = new Set(prev); if(next.has(id)) next.delete(id); else next.add(id); return next; })} />
 
             <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-gray-200 bg-white dark:bg-gray-900 z-20 shadow-sm font-sans">
@@ -439,9 +470,16 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                             <div className="bg-emerald-50/20 dark:bg-emerald-900/5 p-4 rounded-2xl border border-emerald-100/50 space-y-5">
                                 {selectedPrompt ? (
                                     <div className="space-y-5 animate-fade-in">
-                                        {selectedPrompt.fields.map((f, i) => (
+                                        {(() => {
+                                            const textareaCount = selectedPrompt.fields.filter(field => field.type === 'textarea').length;
+                                            return selectedPrompt.fields.map((f, i) => {
+                                                const showManuscriptUpload = isManuscriptField(f, Boolean(imitationMode), textareaCount);
+                                                const uploadedInfo = uploadedManuscriptInfo[f.id];
+                                                const uploadErr = uploadErrors[f.id];
+                                                const isUploading = uploadingFieldId === f.id;
+                                                return (
                                             <div key={f.id} className="space-y-2">
-                                                <div className="flex justify-between items-center mr-1">
+                                                <div className="flex justify-between items-center gap-2 mr-1">
                                                     <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 ml-1">
                                                         {i+1}. {f.label}
                                                         {f.required !== false ? (
@@ -450,35 +488,90 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                                             <span className="ml-1 text-gray-400 font-normal"> (选填)</span>
                                                         )}
                                                     </label>
-                                                    {f.maxLength && (
-                                                        <span className={`text-[10px] ${(formState[f.id]?.length || 0) > f.maxLength ? 'text-red-500 font-bold' : 'text-gray-400'}`}>
-                                                            {formState[f.id]?.length || 0} / {f.maxLength}
-                                                        </span>
-                                                    )}
+                                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                                        {showManuscriptUpload && (
+                                                            <>
+                                                                <input
+                                                                    ref={el => { manuscriptInputRefs.current[f.id] = el; }}
+                                                                    type="file"
+                                                                    accept=".txt,.md,.docx,.csv,.json"
+                                                                    className="hidden"
+                                                                    onChange={e => {
+                                                                        const file = e.target.files?.[0];
+                                                                        e.target.value = '';
+                                                                        void handleManuscriptFileUpload(file, f.id);
+                                                                    }}
+                                                                />
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={isUploading}
+                                                                    onClick={() => manuscriptInputRefs.current[f.id]?.click()}
+                                                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-white dark:bg-gray-800 text-xs font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors disabled:opacity-50"
+                                                                >
+                                                                    <CloudArrowUp className="w-3.5 h-3.5" />
+                                                                    <span>{isUploading ? '读取中…' : '上传原稿'}</span>
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                        {f.maxLength && (
+                                                            <span className={`text-[10px] ${(formState[f.id]?.length || 0) > f.maxLength ? 'text-red-500 font-bold' : 'text-gray-400'}`}>
+                                                                {formState[f.id]?.length || 0} / {f.maxLength}
+                                                            </span>
+                                                        )}
+                                                    </div>
                                                 </div>
+                                                {showManuscriptUpload && uploadedInfo && (
+                                                    <div className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/60 text-xs text-emerald-700 dark:text-emerald-300">
+                                                        <span className="truncate">已导入《{uploadedInfo.name}》· {uploadedInfo.chars} 字</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setFormState(prev => ({ ...prev, [f.id]: '' }));
+                                                                setUploadedManuscriptInfo(prev => { const next = { ...prev }; delete next[f.id]; return next; });
+                                                            }}
+                                                            className="inline-flex items-center gap-0.5 text-gray-500 hover:text-rose-600 flex-shrink-0"
+                                                            title="清空已上传原稿"
+                                                        >
+                                                            <Trash className="w-3.5 h-3.5" />
+                                                            <span>清空</span>
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {uploadErr && (
+                                                    <p role="alert" className="text-xs text-rose-600 dark:text-rose-400 px-1">{uploadErr}</p>
+                                                )}
                                                 {f.type === 'file' ? (
                                                     <div className="w-full p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl transition-all font-sans">
                                                         <input 
                                                             type="file"
                                                             multiple
-                                                            accept=".txt,.md,.json,.csv"
+                                                            accept=".txt,.md,.docx,.json,.csv"
                                                             onChange={(e) => handleFileChange(e, f.id)}
                                                             className="block w-full text-xs text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100"
                                                         />
                                                         {formState[f.id] && (
                                                             <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-900 rounded text-[10px] text-gray-600 dark:text-gray-400 truncate">
-                                                                已加载内容 (预览): {formState[f.id].substring(0, 50)}...
+                                                                已加载内容 ({countContentChars(formState[f.id])} 字): {formState[f.id].substring(0, 50)}...
                                                             </div>
                                                         )}
                                                     </div>
                                                 ) : f.type === 'textarea' ? (
-                                                    <textarea 
-                                                        value={formState[f.id] || ''} 
-                                                        onChange={e => setFormState({...formState, [f.id]: e.target.value})} 
-                                                        placeholder={cleanPlaceholder(f.placeholder, f.label)} 
-                                                        maxLength={f.maxLength}
-                                                        className="w-full p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm min-h-[100px] shadow-sm transition-all font-sans" 
-                                                    />
+                                                    <div
+                                                        onDragOver={showManuscriptUpload ? (e) => { e.preventDefault(); } : undefined}
+                                                        onDrop={showManuscriptUpload ? (e) => {
+                                                            e.preventDefault();
+                                                            const file = e.dataTransfer.files?.[0];
+                                                            if (file) void handleManuscriptFileUpload(file, f.id);
+                                                        } : undefined}
+                                                    >
+                                                        <textarea 
+                                                            value={formState[f.id] || ''} 
+                                                            onChange={e => setFormState({...formState, [f.id]: e.target.value})} 
+                                                            placeholder={showManuscriptUpload ? '可直接输入/粘贴小说原稿，或点击上方「上传原稿」一键导入 .txt / .md / .docx 文件（也支持拖拽文件到此处）...' : cleanPlaceholder(f.placeholder, f.label)} 
+                                                            maxLength={showManuscriptUpload && uploadedInfo ? undefined : f.maxLength}
+                                                            className="w-full p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm min-h-[100px] shadow-sm transition-all font-sans" 
+                                                        />
+                                                    </div>
                                                 ) : (
                                                     <input 
                                                         type="text" 
@@ -491,7 +584,9 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                                 )}
                                                 {f.description && <p className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mt-1.5 ml-1 leading-relaxed">💡 {f.description}</p>}
                                             </div>
-                                        ))}
+                                                );
+                                            });
+                                        })()}
                                     </div>
                                 ) : (
                                     <textarea value={freeInput} onChange={e => setFreeInput(e.target.value)} placeholder="请输入您的创作灵感或详细要求..." className="w-full h-40 p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm resize-none shadow-sm transition-all font-sans" />

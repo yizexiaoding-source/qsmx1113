@@ -23,7 +23,10 @@ export function geminiStream(source: AsyncIterable<any>, structured: boolean, si
                     ]).finally(() => clearTimeout(timer));
                     if (result.done) break;
                     const chunk = result.value;
-                    reason = chunk?.candidates?.[0]?.finishReason || reason;
+                    const candidateReason = chunk?.candidates?.[0]?.finishReason;
+                    if (candidateReason && candidateReason !== 'FINISH_REASON_UNSPECIFIED') {
+                        reason = candidateReason;
+                    }
                     const parts = chunk?.candidates?.[0]?.content?.parts;
                     const text = Array.isArray(parts) ? parts.filter((p: any) => typeof p.text === 'string' && !p.thought).map((p: any) => p.text).join('') : chunk?.text || '';
                     if (text) send({ type: 'text', text });

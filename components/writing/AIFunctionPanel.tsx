@@ -1,3 +1,4 @@
+import TargetLength from '../TargetLength';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Asset, Prompt, NovelSettings, Chapter } from '../../types';
@@ -52,6 +53,7 @@ const AIFunctionPanel: React.FC<AIFunctionPanelProps> = ({ contextText = '', sel
     const [activeTab, setActiveTab] = useState<TabType>('expand');
     const [model, setModel] = useState('deepseek-chat');
     const [temperature, setTemperature] = useState(1);
+    const [targetChars, setTargetChars] = useState(0);
     const [topP, setTopP] = useState(0.95);
     const maxOutputTokens = 32768;
     const [showConfig, setShowConfig] = useState(false);
@@ -227,7 +229,7 @@ const AIFunctionPanel: React.FC<AIFunctionPanelProps> = ({ contextText = '', sel
                 model, 
                 temperature, 
                 topP, 
-                maxOutputTokens, 
+                maxOutputTokens, targetChars: targetChars || undefined,
                 signal: controller.signal 
             });
             
@@ -266,7 +268,7 @@ ${FORCE_LONG_INSTRUCTION}
         const controller = new AbortController();
         abortControllerRef.current = controller;
         try {
-            const stream = generateTextStream(continuePrompt, { model, temperature, topP, maxOutputTokens, signal: controller.signal });
+            const stream = generateTextStream(continuePrompt, { model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
             for await (const chunk of stream) setResultText(prev => prev + chunk);
         } catch (err: any) {
             if (err.message !== 'Aborted') setError(err.message || '生成失败');
@@ -389,12 +391,12 @@ ${FORCE_LONG_INSTRUCTION}
                                     <div className="mt-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 grid grid-cols-1 gap-4 animate-fade-in text-xs">
                                         <div className="space-y-1">
                                             <label className="block font-bold text-gray-700 dark:text-gray-300 flex justify-between"><span>随机度 (Temperature): {temperature}</span></label>
-                                            <input type="range" min="0" max="1.5" step="0.1" value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                            <input type="range" min="0" max="1.5" step="0.1" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                         </div>
                                         <div className="space-y-1">
                                             <label className="block font-bold text-gray-700 dark:text-gray-300 flex justify-between"><span>核采样 (Top P): {topP}</span></label>
-                                            <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
-                                        </div>
+                                            <input type="range" min="0" max="1" step="0.05" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                        </div>{model.startsWith('gemini-4-') && <p className="text-xs text-amber-700 dark:text-amber-300" role="note">当前 Gemini 4 接口未传递温度和 Top P，以上对应滑块不生效，已禁用。目标字数仍用于正文生成要求。</p>}<TargetLength value={targetChars} onChange={setTargetChars} />
 
                                     </div>
                                 )}

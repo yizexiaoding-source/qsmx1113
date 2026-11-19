@@ -1,3 +1,4 @@
+import TargetLength from './TargetLength';
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Workflow, Asset, Prompt } from '../types';
@@ -157,6 +158,7 @@ const WorkflowRun: React.FC<WorkflowRunProps> = ({ workflow, onBack }) => {
     const [temperature, setTemperature] = useState(0.8);
     const [topP, setTopP] = useState(0.95);
     const maxOutputTokens = 32768;
+    const [targetChars, setTargetChars] = useState(0);
     const [showConfig, setShowConfig] = useState(true);
 
     const [formState, setFormState] = useState<Record<string, string>>({});
@@ -310,7 +312,7 @@ ${FORCE_LONG_INSTRUCTION}
                 model: modelRef.current, 
                 temperature, 
                 topP, 
-                maxOutputTokens, 
+                maxOutputTokens, targetChars: targetChars || undefined,
                 signal: controller.signal 
             });
             
@@ -374,7 +376,7 @@ ${FORCE_LONG_INSTRUCTION}
                     model: modelRef.current, 
                     temperature, 
                     topP, 
-                    maxOutputTokens, 
+                    maxOutputTokens, targetChars: targetChars || undefined,
                     signal: controller.signal 
                 });
                 
@@ -524,8 +526,8 @@ ${FORCE_LONG_INSTRUCTION}
                                         <label className="block text-[10px] font-black text-sky-500 flex justify-between">
                                             <span>随机度: {temperature}</span>
                                         </label>
-                                        <input type="range" min="0" max="1.5" step="0.1" value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
-                                    </div>
+                                        <input type="range" min="0" max="1.5" step="0.1" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                    </div>{model.startsWith('gemini-4-') && <p className="text-xs text-amber-700 dark:text-amber-300" role="note">当前 Gemini 4 接口未传递温度和 Top P，以上对应滑块不生效，已禁用。目标字数仍用于正文生成要求。</p>}<TargetLength value={targetChars} onChange={setTargetChars} />
                                 </div>
                             )}
                             

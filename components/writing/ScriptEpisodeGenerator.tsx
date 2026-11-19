@@ -2210,11 +2210,11 @@ ${skillEpisodesStore[skillReviewNum] || "请先在第五步中生成该集剧本
                                 
                                 <div className="space-y-1.5 pt-2">
                                     <div className="flex justify-between text-[11px] font-bold text-gray-400">
-                                        <span>随机度 (Temp): {temperature}</span>
+                                        <span>{model.startsWith('gemini-4-') ? '当前 Gemini 4 接口未传递温度，此滑块不生效。' : ''}</span><span>随机度 (Temp): {temperature}</span>
                                     </div>
                                     <input 
                                         type="range" min="0" max="1.5" step="0.05" 
-                                        value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))}
+                                        disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))}
                                         className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-sky-500"
                                     />
                                 </div>
@@ -3020,10 +3020,10 @@ ${skillEpisodesStore[skillReviewNum] || "请先在第五步中生成该集剧本
                                     
                                     {/* Temperature Slider */}
                                     <div className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-800 px-3 py-1.5 rounded-xl border border-gray-150 dark:border-gray-700 text-[11px] text-gray-500 font-bold">
-                                        <span>随机度: {temperature}</span>
+                                        <span>{model.startsWith('gemini-4-') ? '当前 Gemini 4 接口未传递温度，此滑块不生效。' : ''}</span><span>随机度: {temperature}</span>
                                         <input 
                                             type="range" min="0" max="1.5" step="0.05" 
-                                            value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))}
+                                            disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))}
                                             className="w-16 h-1 bg-gray-250 rounded-lg appearance-none cursor-pointer accent-purple-500"
                                         />
                                     </div>

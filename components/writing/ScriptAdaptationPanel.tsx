@@ -1,3 +1,4 @@
+import TargetLength from '../TargetLength';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -48,8 +49,9 @@ const CollapsibleSection: React.FC<{ title: string; icon: any; color: string; ch
 const ScriptAdaptationPanel: React.FC<ScriptAdaptationPanelProps> = ({ onInsert, onStream }) => {
     const [model, setModel] = useState('deepseek-chat');
     const [temperature, setTemperature] = useState(1);
+    const [targetChars, setTargetChars] = useState(0);
     const [topP, setTopP] = useState(0.95);
-    const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
+    const maxOutputTokens = 32768;
     const [showConfig, setShowConfig] = useState(false);
     const [isConfigCollapsed, setIsConfigCollapsed] = useState(false);
 
@@ -169,7 +171,7 @@ const ScriptAdaptationPanel: React.FC<ScriptAdaptationPanelProps> = ({ onInsert,
                 model, 
                 temperature, 
                 topP, 
-                maxOutputTokens, 
+                maxOutputTokens, targetChars: targetChars || undefined,
                 signal: controller.signal 
             });
             
@@ -217,7 +219,7 @@ ${FORCE_LONG_INSTRUCTION}
                 model, 
                 temperature, 
                 topP, 
-                maxOutputTokens, 
+                maxOutputTokens, targetChars: targetChars || undefined,
                 signal: controller.signal 
             });
             for await (const chunk of stream) {
@@ -278,14 +280,14 @@ ${FORCE_LONG_INSTRUCTION}
                                             <label className="block font-bold text-sky-500 flex justify-between uppercase">
                                                 <span>温度: {temperature}</span>
                                             </label>
-                                            <input type="range" min="0" max="1.5" step="0.1" value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                            <input type="range" min="0" max="1.5" step="0.1" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                         </div>
                                         <div className="space-y-1">
                                             <label className="block font-bold text-sky-500 flex justify-between uppercase">
                                                 <span>核采样: {topP}</span>
                                             </label>
-                                            <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
-                                        </div>
+                                            <input type="range" min="0" max="1" step="0.05" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                        </div>{model.startsWith('gemini-4-') && <p className="text-xs text-amber-700 dark:text-amber-300" role="note">当前 Gemini 4 接口未传递温度和 Top P，以上对应滑块不生效，已禁用。目标字数仍用于正文生成要求。</p>}<TargetLength value={targetChars} onChange={setTargetChars} />
                                     </div>
                                 )}
                             </div>

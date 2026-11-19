@@ -6,6 +6,7 @@ interface GenerationOptions {
     signal?: AbortSignal;
     taskPrompt?: string;
     targetChars?: number;
+    enforceTargetLength?: boolean;
     autoRecover?: boolean;
     initialText?: string;
     onStatus?: (status: string) => void;
@@ -197,7 +198,7 @@ function prepareStoryPrompt(prompt: string, options: GenerationOptions): { promp
 只输出正文，不输出计划、字数说明或版本说明。` };
 }
 
-function validateStoryResult(text: string, target: number | null): void {
+function validateStoryResult(text: string, target: number | null, enforceLength = true): void {
     if (!target) return;
     if (text.trimStart().startsWith('⚠️')) throw new Error('生成失败，未完成正文，请检查上方错误信息。');
     if (/(?:^|\n)\s*(?:#{1,6}\s*)?(?:第[二三234]篇|第二个故事|另一(?:篇|版)(?:小说|故事|正文)|(?:以下|下面)(?:是|为).{0,12}(?:第二篇|另一篇))/m.test(text)
@@ -205,7 +206,7 @@ function validateStoryResult(text: string, target: number | null): void {
         throw new Error('检测到完结后继续输出或多个故事标记，本次未通过单篇检查。请勿将其当作合格终稿。');
     }
     const actual = countContentChars(text);
-    if (actual < Math.ceil(target * 0.95) || actual > Math.floor(target * 1.05)) {
+    if (enforceLength && (actual < Math.ceil(target * 0.95) || actual > Math.floor(target * 1.05))) {
         throw new Error(`正文实际 ${actual} 字，未达到 ${Math.ceil(target * 0.95)}～${Math.floor(target * 1.05)} 字的验收范围。已保留草稿，不会自动拼接另一篇；请调整任务或重新生成。`);
     }
 }
@@ -407,7 +408,7 @@ export function continuationText(previous: string, addition: string) {
 export const generateText = async (prompt: string, options: GenerationOptions): Promise<string> => {
     const task = prepareStoryPrompt(prompt, options);
     const text = await generateSingleText(task.prompt, options);
-    validateStoryResult(text, task.target);
+    validateStoryResult(text, task.target, options.enforceTargetLength !== false);
     return text;
 };
 
@@ -430,7 +431,7 @@ export const generateTextStream = async function* (
                 } else { text += chunk; yield chunk; }
             }
             if (pending) { const fresh = release(); text += fresh; if (fresh) yield fresh; }
-            validateStoryResult(text, task.target);
+            validateStoryResult(text, task.target, options.enforceTargetLength !== false);
             options.onStatus?.('生成完成');
             return;
         } catch (error: any) {

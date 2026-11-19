@@ -376,9 +376,21 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                         
                         <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 border border-gray-100 dark:border-gray-800 shadow-sm">
                             <VersionItem
+                                version="v1.10.0"
+                                date="2026.11.19"
+                                isLatest={true}
+                                features={[
+                                    "文风仿写新增五个剧情走向：先看剧情概括、主要事件与节奏，再多选开始仿写；保留原有提示词、原稿和关联素材。",
+                                    "多篇同时生成、独立展示；已生成内容不因新一批选择再次生成。完成标签使用黄色，查看完成稿时高亮发光。",
+                                    "恢复停止生成，暂停后支持接续原稿或重新生成；复制当前篇增加按下反馈及三秒成功提示。",
+                                    "统一目标字数滑块；仿写正常结束即显示已完成，正文展示实际字数，真正中断仍保留草稿和恢复入口。",
+                                    "如实标注 Gemini 4 当前接口未传递温度和 Top P，并禁用对应滑块。"
+                                ]}
+                            />
+                            <VersionItem
                                 version="v1.9.2"
                                 date="2026.11.18"
-                                isLatest={true}
+                                isLatest={false}
                                 features={[
                                     "创意生成中断恢复：识别正常结束、输出上限和连接中断，使用同一模型自动恢复最多 3 次；失败保留草稿并提供继续生成，不再静默切换模型。",
                                     "字数展示：移除创作参数中的长度滑块，支持填写目标字数，展示实际字数与目标进度；错误与正文分开显示。",

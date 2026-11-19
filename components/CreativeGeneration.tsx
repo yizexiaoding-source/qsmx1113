@@ -1,3 +1,5 @@
+import ImitationDirections from './ImitationDirections';
+import TargetLength from './TargetLength';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { CREATIVE_MODULES } from '../constants';
@@ -124,6 +126,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
 
     useEffect(() => {
         if (initialData?.prompt) {
+            setSelectedModule(CREATIVE_MODULES.find(module => module.subCategories.some(category => initialData.prompt!.subCategories.includes(category))) || CREATIVE_MODULES[0]);
             setSelectedPrompt(initialData.prompt);
             if (initialData.values) {
                 setFormState(initialData.values);
@@ -174,7 +177,8 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
 
     const handleStop = () => {
         if (abortControllerRef.current) abortControllerRef.current.abort();
-        setIsGenerating(false);
+        setGenerationStatus('已暂停，草稿已保留');
+        setCanResume(true);
         setIsWaitingForFirstChunk(false);
         setShowLoadingOverlay(false);
     };
@@ -227,6 +231,9 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
             });
         }
     };
+
+    const imitationMode = selectedPrompt?.subCategories?.includes('imitate') || selectedPrompt?.title.includes('仿写');
+    const preparedPrompt = selectedPrompt ? selectedPrompt.fields.reduce((text, f) => text.split('${'+f.id+'}').join(formState[f.id] || ''), selectedPrompt.template) : freeInput;
 
     const handleGenerate = async () => {
         if (isGenerating) return;
@@ -368,7 +375,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                             <label className="block text-[10px] font-black text-sky-400 flex justify-between uppercase">
                                                 <span>温度 (Temperature): {temperature}</span>
                                             </label>
-                                            <input type="range" min="0" max="1.5" step="0.1" value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                            <input type="range" min="0" max="1.5" step="0.1" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                             <p className="text-[10px] text-gray-400 leading-relaxed italic">
                                                 <InformationCircle className="w-3 h-3 inline mr-1" />
                                                 控制创作随机性。值越高越有“创意”，值越低越严谨、稳定。
@@ -378,17 +385,13 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                             <label className="block text-[10px] font-black text-sky-400 flex justify-between uppercase">
                                                 <span>核采样 (Top P): {topP}</span>
                                             </label>
-                                            <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                            <input type="range" min="0" max="1" step="0.05" disabled={model.startsWith('gemini-4-')} title={model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-100 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                             <p className="text-[10px] text-gray-400 leading-relaxed italic">
                                                 <InformationCircle className="w-3 h-3 inline mr-1" />
                                                 控制词汇多样性。值越高选词越丰富，值越低则更倾向于常用、稳妥的词汇。
                                             </p>
                                         </div>
-                                        <div className="space-y-2">
-                                            <label className="block text-xs font-bold">目标字数（可选）</label>
-                                            <input aria-label="目标字数" type="number" min="0" step="100" value={targetChars || ''} placeholder="不填则按任务要求生成" onChange={e => setTargetChars(Math.max(0, Math.floor(Number(e.target.value) || 0)))} className="w-full rounded-lg border p-2 text-sm bg-transparent" />
-                                            <p className="text-xs text-gray-500">{targetChars ? `合格范围：${Math.ceil(targetChars * .95)}～${Math.floor(targetChars * 1.05)} 字` : '按正文实际字数检查，不承诺固定输出篇幅。'}</p>
-                                        </div>
+{model.startsWith('gemini-4-') && <p className="text-xs text-amber-700 dark:text-amber-300" role="note">当前 Gemini 4 接口未传递温度和 Top P，以上对应滑块不生效，已禁用。目标字数仍用于正文生成要求。</p>}<TargetLength value={targetChars} onChange={setTargetChars} />
                                     </div>
                                 )}
                             </div>
@@ -484,16 +487,16 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                         </div>
                     </div>
 
-                    <div className="p-2 border-t bg-white dark:bg-gray-900 font-sans">
-                        <button disabled={isGenerating} onClick={handleGenerate} className={`w-full py-2 rounded-2xl font-black text-white shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 ${isGenerating ? 'bg-rose-500 shadow-rose-500/20' : 'bg-sky-600 hover:bg-sky-50 shadow-sky-500/20'}`}>
-                            {isGenerating ? <><ArrowPath className="w-5 h-5 animate-spin" />正在创作</> : <><Sparkles className="w-5 h-5" />开始创作</>}
+                    {!imitationMode && <div className="p-2 border-t bg-white dark:bg-gray-900 font-sans">
+                        <button onClick={isGenerating ? handleStop : handleGenerate} className={`w-full py-2 rounded-2xl font-black text-white shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 ${isGenerating ? 'bg-rose-500 shadow-rose-500/20' : 'bg-sky-600 hover:bg-sky-50 shadow-sky-500/20'}`}>
+                            {isGenerating ? <><Stop className="w-5 h-5" />停止生成</> : <><Sparkles className="w-5 h-5" />开始创作</>}
                         </button>
-                    </div>
+                    </div>}
                 </div>
 
                 <div className="flex-1 bg-gray-50 dark:bg-black/50 flex flex-col overflow-hidden font-sans">
                     <div className="w-full bg-white dark:bg-gray-900 h-full shadow-sm flex flex-col relative overflow-hidden font-sans">
-                        {!generatedText && !isWaitingForFirstChunk && !generationError ? (
+                        {imitationMode ? <ImitationDirections prompt={preparedPrompt + Array.from(selectedAssetIds).map(id=>assets.find(a=>a.id===id)?.content || '').join('\n')} options={{model,temperature,topP,maxOutputTokens,targetChars:targetChars||undefined,bodyInstruction:FORCE_LONG_INSTRUCTION}} /> : !generatedText && !isWaitingForFirstChunk && !generationError && !canResume ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-gray-400 opacity-50 p-8"><Sparkles className="w-20 h-20 mb-6" /><p className="text-lg font-medium">在左侧输入灵感，开启 AI 创作之旅</p></div>
                         ) : (
                             <>
@@ -527,15 +530,17 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                     )}
                                     <FormattedText text={generatedText} />
                                     {/* Smart Continue/Regenerate Button */}
-                                    {!isGenerating && generatedText && (
+                                    {!isGenerating && (generatedText || canResume) && (
                                         <div className="mt-8 mb-4 flex justify-center animate-fade-in">
-                                            {canResume ? (
+                                            {canResume ? (<div className="flex gap-3">
                                                 <button 
                                                     onClick={handleContinue}
                                                     className="px-6 py-2.5 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-full shadow-lg hover:shadow-sky-500/30 flex items-center gap-2 transition-all active:scale-95 text-sm"
                                                 >
                                                     <Play className="w-4 h-4" /> 继续生成
                                                 </button>
+
+<button onClick={handleGenerate} className="px-6 py-2 rounded-full border text-sky-700">重新生成</button></div>
                                             ) : (
                                                 <button 
                                                     onClick={handleGenerate}

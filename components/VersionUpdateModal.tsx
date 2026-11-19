@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Check, Sparkles, ClipboardDocumentCheck, AdjustmentsHorizontal } from './Icon';
 
-const CURRENT_VERSION = 'v1.9.2';
+const CURRENT_VERSION = 'v1.10.0';
 const STORAGE_KEY = `qisimiaoxie_version_seen_${CURRENT_VERSION}`;
 
 const VersionUpdateModal: React.FC = () => {
@@ -47,7 +47,7 @@ const VersionUpdateModal: React.FC = () => {
                                 奇思妙写 <span className="text-indigo-600 dark:text-indigo-400">{CURRENT_VERSION}</span>
                             </h2>
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-bold tracking-wide">
-                                2026.11.18 · 单篇生成与真实字数校验
+                                2026.11.19 · 先选剧情，再开始仿写
                             </p>
                         </div>
                     </div>
@@ -57,10 +57,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <ClipboardDocumentCheck className="w-4 h-4 text-indigo-500" />
-                                中断自动恢复，同一个故事继续写
+                                新增五个剧情走向，先选择再仿写
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                创意生成遇到输出上限或连接中断时，使用同一模型自动恢复最多 3 次。恢复失败保留草稿并提供继续生成，错误信息不再混入正文。
+                                保留原稿、类型、视角、补充要求和关联素材，先设计五个剧情方案。支持多选并行生成，各篇独立展示，已生成内容不会随新选择重复生成。
                             </p>
                         </div>
 
@@ -68,10 +68,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <AdjustmentsHorizontal className="w-4 h-4 text-sky-500" />
-                                目标字数，按实际正文验收
+                                暂停、接续与实际字数
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                要求一万字时，接受 9500～10500 字。生成完成后显示实际字数；不足或超出范围会明确提示并保留草稿，不再自动追加另一篇。统计去除空白、包含标点。
+                                恢复停止生成；暂停后可继续当前篇或从头重新生成。目标字数使用滑块设置，仿写正文正常结束即标记已完成，展示实际字数，不因篇幅差异判为未完成。
                             </p>
                         </div>
 
@@ -79,10 +79,10 @@ const VersionUpdateModal: React.FC = () => {
                         <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
                             <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-300 mb-1.5 flex items-center gap-2">
                                 <Sparkles className="w-4 h-4" />
-                                审稿切换，保留问题位置
+                                更清楚的完成与复制反馈
                             </h3>
                             <p className="text-xs text-indigo-900 dark:text-indigo-200 leading-relaxed">
-                                选中问题后切换编辑正文，自动定位并选中文字；切换高亮模式保留原文位置。相似度视图保留原标点及段落。创作页以目标字数和实际字数展示进度。
+                                完成标签使用黄色，查看当前完成稿时边框发光；复制成功显示三秒提示。Gemini 4 当前接口未传递的温度和 Top P 已标注并禁用。
                             </p>
                         </div>
                     </div>

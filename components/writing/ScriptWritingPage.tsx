@@ -1,3 +1,4 @@
+import TargetLength from '../TargetLength';
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Script, Scene, ScriptSettings, Workflow, Asset, Prompt, PromptCategory, PromptSubCategory, WorkflowStep } from '../../types';
@@ -192,6 +193,7 @@ const ScriptWritingPage: React.FC<ScriptWritingPageProps> = ({ script: initialSc
 
     // Model Config State
     const [temperature, setTemperature] = useState(1);
+    const [targetChars, setTargetChars] = useState(0);
     const [topP, setTopP] = useState(0.95);
     const maxOutputTokens = 32768;
     const [showModelConfig, setShowModelConfig] = useState(false);
@@ -559,7 +561,7 @@ ${FORCE_LONG_INSTRUCTION}`;
             }
 
             let stepOutput = isContinue ? (stepResults[step.outputVariable] || '') : '';
-            const stream = generateTextStream(finalPrompt, { model: settings.model, temperature, topP, maxOutputTokens, signal: controller.signal });
+            const stream = generateTextStream(finalPrompt, { model: settings.model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
             
             for await (const chunk of stream) { 
                 stepOutput += chunk; 
@@ -672,7 +674,7 @@ ${FORCE_LONG_INSTRUCTION}`;
             abortControllerRef.current = controller;
 
             try {
-                const stream = generateTextStream(finalPrompt, { model: settings.model, temperature, topP, maxOutputTokens, signal: controller.signal });
+                const stream = generateTextStream(finalPrompt, { model: settings.model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
                 for await (const chunk of stream) { 
                     setPromptResultText(prev => prev + chunk); 
                 }
@@ -948,14 +950,15 @@ ${FORCE_LONG_INSTRUCTION}`;
                             <div className="p-3 bg-sky-50 dark:bg-sky-900/10 rounded-xl border border-sky-100 dark:border-sky-800 space-y-3 animate-fade-in">
                                 <div className="space-y-1">
                                     <label className="text-[10px] font-bold text-sky-600 dark:text-sky-400 flex justify-between"><span>随机度 (Temperature): {temperature}</span></label>
-                                    <input type="range" min="0" max="1.5" step="0.1" value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                    <input type="range" min="0" max="1.5" step="0.1" disabled={settings.model.startsWith('gemini-4-')} title={settings.model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={settings.model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={temperature} onChange={e => setTemperature(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                     <p className="text-[9px] text-gray-400 mt-0.5">控制创造性：值越高越发散（适合创意），值越低越严谨（适合逻辑）。</p>
                                 </div>
                                 <div className="space-y-1">
                                     <label className="text-[10px] font-bold text-sky-600 dark:text-sky-400 flex justify-between"><span>核采样 (Top P): {topP}</span></label>
-                                    <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
+                                    <input type="range" min="0" max="1" step="0.05" disabled={settings.model.startsWith('gemini-4-')} title={settings.model.startsWith('gemini-4-') ? '当前接口未传递此参数，调整不生效' : undefined} style={settings.model.startsWith('gemini-4-') ? { opacity: 0.4, cursor: 'not-allowed' } : undefined} value={topP} onChange={e => setTopP(parseFloat(e.target.value))} className="w-full h-1 bg-sky-200 rounded-lg appearance-none cursor-pointer accent-sky-500" />
                                     <p className="text-[9px] text-gray-400 mt-0.5">控制词汇多样性：降低该值可减少偏门词汇的出现。</p>
                                 </div>
+                                {settings.model.startsWith('gemini-4-') && <p className="text-xs text-amber-700 dark:text-amber-300" role="note">当前 Gemini 4 接口未传递温度和 Top P，以上对应滑块不生效，已禁用。目标字数仍用于正文生成要求。</p>}<TargetLength value={targetChars} onChange={setTargetChars} />
 
                             </div>
                         )}

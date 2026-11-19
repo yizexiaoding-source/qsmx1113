@@ -24,6 +24,7 @@ interface CreativeGenerationProps {
 
 // 修改：增加更严格的“纯净输出”指令，禁止角色扮演式的开场白
 const FORCE_LONG_INSTRUCTION = "\n\n【专业创作指令】：\n1. **深度扩写模式**：请采用“分层迭代生成”策略。不要概括情节，而是通过大量的细节描写（环境烘托、动作拆解、心理独白、感官体验）来丰富内容。如果用户要求长篇幅，请务必通过极其细腻的描写来达到字数要求，严禁敷衍或提前收尾。\n2. **字数突破**：请充分利用输出长度限制，将每一个细小的动作和心理变化都展开撰写，确保单次输出尽可能充实且逻辑严密。\n3. **严禁输出**任何与正文无关的对话填充内容（如：“你好！我是xx大神”、“根据您的要求...”、“以下是为您生成的...”等）。\n4. **直接输出**创作内容本身，不要有开场白或结束语。\n5. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
+const TARGET_LENGTH_INSTRUCTION = "\n\n【专业创作指令】：\n1. **精准控字创作**：通过自然的场景、动作、对话与心理描写展开剧情，但必须严格围绕设定目标字数分配全篇节奏，严禁提前草草收尾，也严禁超出字数上限。\n2. **严禁输出**任何与正文无关的对话填充内容（如：“你好！我是xx大神”、“根据您的要求...”、“以下是为您生成的...”等）。\n3. **直接输出**创作内容本身，不要有开场白、结尾感言或字数说明。\n4. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
 
 // 辅助函数：去除 Markdown 标记转为纯文本
 const stripMarkdown = (text: string) => {
@@ -255,10 +256,11 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         // 保存原始 Prompt 以便续写使用
         lastPromptRef.current = finalPrompt;
 
-        // Append verbose instruction
-        finalPrompt += FORCE_LONG_INSTRUCTION;
+        const resolvedTarget = targetChars || resolveStoryTarget(basePrompt) || undefined;
+        // Append instruction compatible with target length
+        finalPrompt += resolvedTarget ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION;
 
-        const requestOptions = { model, taskPrompt: basePrompt, temperature, topP, maxOutputTokens, targetChars: targetChars || resolveStoryTarget(basePrompt) || undefined, autoRecover: true, onStatus: setGenerationStatus };
+        const requestOptions = { model, taskPrompt: basePrompt, temperature, topP, maxOutputTokens, targetChars: resolvedTarget, stageControl: Boolean(resolvedTarget), autoRecover: true, onStatus: setGenerationStatus };
         taskOptionsRef.current = requestOptions;
         const controller = new AbortController(); abortControllerRef.current = controller;
         let completedText = '';
@@ -299,7 +301,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         const controller = new AbortController(); abortControllerRef.current = controller;
         let latestText = generatedText;
         try {
-            for await (const chunk of generateTextStream(lastPromptRef.current + FORCE_LONG_INSTRUCTION, {
+            for await (const chunk of generateTextStream(lastPromptRef.current + (taskOptionsRef.current.targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION), {
                 ...taskOptionsRef.current, initialText: generatedText, signal: controller.signal
             })) {
                 latestText += chunk;
@@ -507,7 +509,10 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
 
                 <div className="flex-1 bg-gray-50 dark:bg-black/50 flex flex-col overflow-hidden font-sans">
                     <div className="w-full bg-white dark:bg-gray-900 h-full shadow-sm flex flex-col relative overflow-hidden font-sans">
-                        {imitationMode ? <ImitationDirections prompt={preparedPrompt + Array.from(selectedAssetIds).map(id=>assets.find(a=>a.id===id)?.content || '').join('\n')} options={{model,temperature,topP,maxOutputTokens,targetChars:targetChars||undefined,bodyInstruction:FORCE_LONG_INSTRUCTION}} /> : !generatedText && !isWaitingForFirstChunk && !generationError && !canResume ? (
+                        {imitationMode ? (() => {
+                            const imitationTarget = targetChars || resolveStoryTarget(preparedPrompt) || undefined;
+                            return <ImitationDirections prompt={preparedPrompt + Array.from(selectedAssetIds).map(id=>assets.find(a=>a.id===id)?.content || '').join('\n')} options={{model,temperature,topP,maxOutputTokens,targetChars:imitationTarget,stageControl:true,bodyInstruction:imitationTarget?TARGET_LENGTH_INSTRUCTION:FORCE_LONG_INSTRUCTION}} />;
+                        })() : !generatedText && !isWaitingForFirstChunk && !generationError && !canResume ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-gray-400 opacity-50 p-8"><Sparkles className="w-20 h-20 mb-6" /><p className="text-lg font-medium">在左侧输入灵感，开启 AI 创作之旅</p></div>
                         ) : (
                             <>

@@ -2,7 +2,7 @@ import TargetLength from '../TargetLength';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Asset, Prompt, Workflow, NovelSettings, PromptSubCategory } from '../../types';
-import { generateText, generateTextStream } from '../../services/geminiService';
+import { generateText, generateTextStream, countContentChars } from '../../services/geminiService';
 import { fetchMaterials, incrementPromptHeat } from '../../services/supabaseService';
 import { PROMPTS, WORKFLOWS as MOCK_WORKFLOWS } from '../../constants';
 import { Sparkles, DocumentPlus, Pencil, ClipboardDocumentCheck, X, ChevronDown, Workflow as WorkflowIcon, BookOpen, Copy, Trash, Stop, AdjustmentsHorizontal, Search, Database, InformationCircle, Check, ArrowPath, Plus, Play, DocumentText } from '../Icon';
@@ -22,6 +22,7 @@ const WRITING_STRATEGIES = [
 ];
 
 const FORCE_LONG_INSTRUCTION = "\n\n【专业创作指令】：\n1. **深度扩写模式**：请采用“分层迭代生成”策略。不要概括情节，而是通过大量的细节描写（环境烘托、动作拆解、心理独白、感官体验）来丰富内容。如果用户要求长篇幅，请务必通过极其细腻的描写来达到字数要求，严禁敷衍或提前收尾。\n2. **字数突破**：请充分利用输出长度限制，将每一个细小的动作和心理变化都展开撰写，确保单次输出尽可能充实且逻辑严密。\n3. **严禁输出**任何与正文无关的对话填充内容（如：“你好！我是xx大神”、“根据您的要求...”、“以下是为您生成的...”等）。\n4. **直接输出**创作内容本身，不要有开场白或结束语。\n5. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
+const TARGET_LENGTH_INSTRUCTION = "\n\n【专业创作指令】：\n1. **精准控字创作**：通过自然的场景、动作、对话与心理描写展开剧情，但必须严格围绕设定目标字数分配全篇节奏，严禁提前草草收尾，也严禁超出字数上限。\n2. **严禁输出**任何与正文无关的对话填充内容（如：“你好！我是xx大神”、“根据您的要求...”、“以下是为您生成的...”等）。\n3. **直接输出**创作内容本身，不要有开场白、结尾感言或字数说明。\n4. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
 
 interface ShortStoryAIPanelProps {
     contextText: string;
@@ -199,9 +200,9 @@ const ShortStoryAIPanel: React.FC<ShortStoryAIPanelProps> = ({ contextText = '',
                 finalPrompt = `${cleanInstruction}\n${settingsContext ? `${settingsContext}\n\n` : ''}${fullTextContext}${assetContext ? `关联素材：\n${assetContext}\n\n` : ''}${basePrompt}`;
             }
 
-            finalPrompt += FORCE_LONG_INSTRUCTION;
+            finalPrompt += targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION;
             lastPromptRef.current = finalPrompt;
-            const stream = generateTextStream(finalPrompt, { model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
+            const stream = generateTextStream(finalPrompt, { model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, stageControl: targetChars > 0 && (activeTab === 'original' || activeTab === 'imitate'), autoRecover: true, enforceTargetLength: activeTab === 'original' || activeTab === 'imitate', signal: controller.signal });
             for await (const chunk of stream) setResultText(prev => prev + chunk);
         } catch (err: any) {
             if (err.message !== 'Aborted') setError(err.message || '生成失败');
@@ -238,12 +239,13 @@ ${tail}
 3. **保持一致**：必须严格遵循【原始创作任务指令】中的所有要求（如：提示词卡片的设定、字数要求、小说文风、人称、逻辑、格式等）。
 4. **纯净输出**：直接输出续写正文，不要有任何关于“好的”、“继续生成”、“接上文”之类的开场白或解释语。
 
-${FORCE_LONG_INSTRUCTION}`;
+${targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION}`;
 
         const controller = new AbortController();
         abortControllerRef.current = controller;
         try {
-            const stream = generateTextStream(continuePrompt, { model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
+            const remainingChars = targetChars ? Math.max(300, targetChars - countContentChars(resultText)) : undefined;
+            const stream = generateTextStream(continuePrompt, { model, temperature, topP, maxOutputTokens, stageTargetChars: remainingChars, signal: controller.signal });
             for await (const chunk of stream) setResultText(prev => prev + chunk);
         } catch (err: any) {
             if (err.message !== 'Aborted') setError(err.message || '生成失败');

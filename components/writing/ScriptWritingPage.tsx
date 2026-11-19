@@ -8,7 +8,7 @@ import { saveChapterToDB, updateProject, fetchChapters, fetchChapterContent, fet
 import { createPortal } from 'react-dom';
 import FollowUpModal from '../FollowUpModal';
 import CustomSelect from '../CustomSelect';
-import { generateTextStream, normalizeClientModel } from '../../services/geminiService';
+import { generateTextStream, normalizeClientModel, countContentChars } from '../../services/geminiService';
 import AssetSelectionModal from '../AssetSelectionModal';
 import LoadingOverlay from '../LoadingOverlay';
 import { GENRE_TAGS } from '../../constants';
@@ -22,6 +22,7 @@ interface ScriptWritingPageProps {
 
 const NO_MARKDOWN_INSTRUCTION = "\n\n【重要指令】：请以纯文本格式输出剧本，严禁使用Markdown格式（如 **加粗**、# 标题 等）。请直接按剧本格式输出场景、动作和对白。";
 const FORCE_LONG_INSTRUCTION = "\n\n【专业创作指令】：\n1. **深度扩写模式**：请采用“分层迭代生成”策略。不要概括情节，而是通过大量的细节描写（环境烘托、动作拆解、心理独白、感官体验）来丰富内容。如果用户要求长篇幅，请务必通过极其细腻的描写来达到字数要求，严禁敷衍或提前收尾。\n2. **字数突破**：请充分利用输出长度限制，将每一个细小的动作和心理变化都展开撰写，确保单次输出尽可能充实且逻辑严密。\n3. **剧本格式**：请直接按剧本格式输出场景、动作和对白，严禁使用Markdown格式（如 **加粗**、# 标题 等）。\n4. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
+const TARGET_LENGTH_INSTRUCTION = "\n\n【专业创作指令】：\n1. **精准控字创作**：通过自然的场景、动作与对白展开剧情，但必须严格围绕设定目标字数控制篇幅，严禁提前草草收尾，也严禁超出字数上限。\n2. **剧本格式**：请直接按剧本格式输出场景、动作和对白，严禁使用Markdown格式（如 **加粗**、# 标题 等）。\n3. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
 
 const WORKFLOW_CATEGORIES: { id: string; label: string }[] = [
     { id: 'all', label: '全部' },
@@ -551,17 +552,20 @@ const ScriptWritingPage: React.FC<ScriptWritingPageProps> = ({ script: initialSc
 【已生成内容末尾】：
 ...${tail}
 
-${FORCE_LONG_INSTRUCTION}`;
+${targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION}`;
             } else {
                 let prompt = step.prompt;
                 Object.keys(context).forEach(key => { prompt = prompt.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), context[key] || ''); });
                 const corePrompt = `${basicInfo}${assetContext ? `【关联素材】\n${assetContext}\n\n` : ''}${prompt}`;
-                finalPrompt = `${corePrompt}${FORCE_LONG_INSTRUCTION}`;
+                finalPrompt = `${corePrompt}${targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION}`;
                 lastStepPromptsRef.current[step.outputVariable] = corePrompt;
             }
 
             let stepOutput = isContinue ? (stepResults[step.outputVariable] || '') : '';
-            const stream = generateTextStream(finalPrompt, { model: settings.model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
+            const remainingStepChars = isContinue && targetChars ? Math.max(300, targetChars - countContentChars(stepOutput)) : undefined;
+            const stream = generateTextStream(finalPrompt, isContinue
+                ? { model: settings.model, temperature, topP, maxOutputTokens, stageTargetChars: remainingStepChars, signal: controller.signal }
+                : { model: settings.model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, stageControl: targetChars > 0, autoRecover: true, signal: controller.signal });
             
             for await (const chunk of stream) { 
                 stepOutput += chunk; 
@@ -661,10 +665,10 @@ ${FORCE_LONG_INSTRUCTION}`;
 【已生成内容末尾】：
 ...${tail}
 
-${FORCE_LONG_INSTRUCTION}`;
+${targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION}`;
             } else {
                 const corePrompt = `${basicInfo}${assetContext ? `【关联素材】\n${assetContext}\n\n` : ''}${promptText}`;
-                finalPrompt = `${corePrompt}${FORCE_LONG_INSTRUCTION}`;
+                finalPrompt = `${corePrompt}${targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION}`;
                 lastPromptRef.current = corePrompt;
                 setPromptResultText('');
             }
@@ -674,7 +678,10 @@ ${FORCE_LONG_INSTRUCTION}`;
             abortControllerRef.current = controller;
 
             try {
-                const stream = generateTextStream(finalPrompt, { model: settings.model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, signal: controller.signal });
+                const remainingPromptChars = isContinue && targetChars ? Math.max(300, targetChars - countContentChars(promptResultText)) : undefined;
+                const stream = generateTextStream(finalPrompt, isContinue
+                    ? { model: settings.model, temperature, topP, maxOutputTokens, stageTargetChars: remainingPromptChars, signal: controller.signal }
+                    : { model: settings.model, temperature, topP, maxOutputTokens, targetChars: targetChars || undefined, stageControl: targetChars > 0, autoRecover: true, signal: controller.signal });
                 for await (const chunk of stream) { 
                     setPromptResultText(prev => prev + chunk); 
                 }

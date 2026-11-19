@@ -2,7 +2,7 @@ import TargetLength from './TargetLength';
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Workflow, Asset, Prompt } from '../types';
-import { generateTextStream } from '../services/geminiService';
+import { generateTextStream, countContentChars } from '../services/geminiService';
 import { Sparkles, ChevronDoubleLeft, AdjustmentsHorizontal, Check, Copy, Stop, ArrowPath, Play, Database, ChatBubbleOvalLeftEllipsis, DocumentPlus, X } from './Icon';
 import ImportAssetModal from './ImportAssetModal';
 import SaveToCreationModal from './SaveToCreationModal';
@@ -16,6 +16,7 @@ interface WorkflowRunProps {
 }
 
 const FORCE_LONG_INSTRUCTION = "\n\n【专业创作指令】：\n1. **深度扩写模式**：请采用“分层迭代生成”策略。不要概括情节，而是通过大量的细节描写（环境烘托、动作拆解、心理独白、感官体验）来丰富内容。如果用户要求长篇幅，请务必通过极其细腻的描写来达到字数要求，严禁敷衍或提前收尾。\n2. **字数突破**：请充分利用输出长度限制，将每一个细小的动作和心理变化都展开撰写，确保单次输出尽可能充实且逻辑严密。\n3. **严禁输出**任何与正文无关的对话填充内容（如：“你好！我是xx大神”、“根据您的要求...”、“以下是为您生成的...”等）。\n4. **直接输出**创作内容本身，不要有开场白或结束语。\n5. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
+const TARGET_LENGTH_INSTRUCTION = "\n\n【专业创作指令】：\n1. **精准控字创作**：通过自然的场景、动作、对话与心理描写展开剧情，但必须严格围绕设定目标字数分配全篇节奏，严禁提前草草收尾，也严禁超出字数上限。\n2. **严禁输出**任何与正文无关的对话填充内容（如：“你好！我是xx大神”、“根据您的要求...”、“以下是为您生成的...”等）。\n3. **直接输出**创作内容本身，不要有开场白、结尾感言或字数说明。\n4. **逻辑一致性**：严格遵循前文设定的角色性格、世界观和逻辑。";
 
 const stripMarkdown = (text: string) => {
     return text
@@ -304,15 +305,16 @@ ${originalPrompt}
 【已生成内容末尾】：
 ...${tail}
 
-${FORCE_LONG_INSTRUCTION}
+${targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION}
 `;
 
         try {
+             const remainingChars = targetChars ? Math.max(300, targetChars - countContentChars(currentContent)) : undefined;
              const stream = generateTextStream(continuePrompt, { 
                 model: modelRef.current, 
                 temperature, 
                 topP, 
-                maxOutputTokens, targetChars: targetChars || undefined,
+                maxOutputTokens, stageTargetChars: remainingChars,
                 signal: controller.signal 
             });
             
@@ -367,8 +369,8 @@ ${FORCE_LONG_INSTRUCTION}
                     finalPrompt = finalPrompt.split(`\${${key}}`).join(currentContext[key] || '');
                 });
 
-                // Append Force Long Instruction
-                finalPrompt += FORCE_LONG_INSTRUCTION;
+                // Append instruction aligned with target length
+                finalPrompt += targetChars ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION;
                 lastStepPromptsRef.current[step.outputVariable] = finalPrompt;
 
                 let stepContent = '';
@@ -377,6 +379,8 @@ ${FORCE_LONG_INSTRUCTION}
                     temperature, 
                     topP, 
                     maxOutputTokens, targetChars: targetChars || undefined,
+                    stageControl: targetChars > 0,
+                    autoRecover: true,
                     signal: controller.signal 
                 });
                 

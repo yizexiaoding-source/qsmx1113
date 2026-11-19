@@ -376,9 +376,18 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                         
                         <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 border border-gray-100 dark:border-gray-800 shadow-sm">
                             <VersionItem
-                                version="v1.10.1"
+                                version="v1.10.2"
                                 date="2026.11.19"
                                 isLatest={true}
+                                features={[
+                                    "修复目标字数生成偏差过大的问题：在参数中设定目标字数后，成文篇幅可稳定贴近预设目标范围（±1000 字内），有效减少写太短或严重超字数的情况。",
+                                    "修复文风仿写原页「重新设计方案」无加载提示与响应较慢的问题：直接在当前页更换文章或修改要求后点击重新设计方案，可实时查看生成进度并支持随时取消，整体响应更快更流畅。"
+                                ]}
+                            />
+                            <VersionItem
+                                version="v1.10.1"
+                                date="2026.11.19"
+                                isLatest={false}
                                 features={[
                                     "文风仿写与创意生成被迫中断后保留「继续生成」与「重新生成」双按钮：只要已有草稿内容，交互与界面均与主动暂停完全一致，不再因中断丢失原稿。",
                                     "增强续写无缝衔接：新增草稿末尾锚点提示，自动剔除“（接上文）”等非正文前缀、半句截断短重叠及句中多余空行，避免重新开篇或上下断层。",

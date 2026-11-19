@@ -30,7 +30,7 @@ export default function ImitationDirections({prompt,options}:{prompt:string;opti
     const task=`${snapshot.current.prompt}\n【选定剧情走向】\n${JSON.stringify(plans[id])}\n严格按此方案写一篇完整故事，只输出这篇正文。${snapshot.current.options.bodyInstruction || ''}`;
     for await(const chunk of generateTextStream(task,{...snapshot.current.options,taskPrompt:task,initialText:text,enforceTargetLength:false,autoRecover:true,signal:c.signal,onStatus:(status:string)=>update(status)})){text+=chunk;update('正在生成');}
     update('已完成');setSelected(prev=>prev.filter(value=>value!==id));
-   }catch(e:any){update(c.signal.aborted?'已暂停':'生成中断',{error:c.signal.aborted?undefined:e.message,resumable:c.signal.aborted||(e instanceof GenerationInterrupted&&e.recoverable)});}finally{controllers.current.delete(c);}
+   }catch(e:any){update(c.signal.aborted?'已暂停':'生成中断',{error:c.signal.aborted?undefined:e.message,resumable:c.signal.aborted||Boolean(text.trim())||(e instanceof GenerationInterrupted&&e.recoverable)});}finally{controllers.current.delete(c);}
   }));
   setBusy(false);
  };

@@ -261,10 +261,10 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         const requestOptions = { model, taskPrompt: basePrompt, temperature, topP, maxOutputTokens, targetChars: targetChars || resolveStoryTarget(basePrompt) || undefined, autoRecover: true, onStatus: setGenerationStatus };
         taskOptionsRef.current = requestOptions;
         const controller = new AbortController(); abortControllerRef.current = controller;
+        let completedText = '';
         try {
             const stream = generateTextStream(finalPrompt, { ...requestOptions, signal: controller.signal });
             let first = true;
-            let completedText = '';
             for await (const chunk of stream) {
                 if (first) { 
                     setShowLoadingOverlay(false); 
@@ -283,7 +283,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
             if (!controller.signal.aborted && e?.message !== 'Aborted') {
                 const errMsg = e?.message || '生成请求异常，请重试或切换其他模型。';
                 setGenerationError(errMsg); setGenerationStatus('生成未完成');
-                setCanResume(e instanceof GenerationInterrupted && e.recoverable);
+                setCanResume(Boolean(completedText.trim()) || (e instanceof GenerationInterrupted && e.recoverable));
             }
         } finally {
             setIsGenerating(false);
@@ -297,13 +297,24 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         setIsGenerating(true); setCanResume(false); setGenerationError('');
         setGenerationStatus('正在接续同一篇正文');
         const controller = new AbortController(); abortControllerRef.current = controller;
+        let latestText = generatedText;
         try {
             for await (const chunk of generateTextStream(lastPromptRef.current + FORCE_LONG_INSTRUCTION, {
                 ...taskOptionsRef.current, initialText: generatedText, signal: controller.signal
-            })) setGeneratedText(prev => prev + chunk);
+            })) {
+                latestText += chunk;
+                setGeneratedText(prev => prev + chunk);
+            }
+            if (!controller.signal.aborted) {
+                setSuccessMessage(`生成完成 · 实际 ${countContentChars(latestText)} 字`);
+                setShowInlineSuccess(true);
+                setTimeout(() => setShowInlineSuccess(false), 3000);
+            }
         } catch (e: any) {
-            setGenerationError(e.message || '恢复失败，草稿已保留'); setGenerationStatus('生成未完成');
-            setCanResume(e instanceof GenerationInterrupted && e.recoverable);
+            if (!controller.signal.aborted && e?.message !== 'Aborted') {
+                setGenerationError(e.message || '恢复失败，草稿已保留'); setGenerationStatus('生成未完成');
+                setCanResume(Boolean(latestText.trim()) || (e instanceof GenerationInterrupted && e.recoverable));
+            }
         } finally { setIsGenerating(false); }
     };
 

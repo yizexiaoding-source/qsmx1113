@@ -376,9 +376,19 @@ const HelpCenter: React.FC<HelpCenterProps> = ({ onNavigate }) => {
                         
                         <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 border border-gray-100 dark:border-gray-800 shadow-sm">
                             <VersionItem
-                                version="v1.10.0"
+                                version="v1.10.1"
                                 date="2026.11.19"
                                 isLatest={true}
+                                features={[
+                                    "文风仿写与创意生成被迫中断后保留「继续生成」与「重新生成」双按钮：只要已有草稿内容，交互与界面均与主动暂停完全一致，不再因中断丢失原稿。",
+                                    "增强续写无缝衔接：新增草稿末尾锚点提示，自动剔除“（接上文）”等非正文前缀、半句截断短重叠及句中多余空行，避免重新开篇或上下断层。",
+                                    "修复普通创意生成续写中途点击停止时的状态显示与字数完成提示。"
+                                ]}
+                            />
+                            <VersionItem
+                                version="v1.10.0"
+                                date="2026.11.19"
+                                isLatest={false}
                                 features={[
                                     "文风仿写新增五个剧情走向：先看剧情概括、主要事件与节奏，再多选开始仿写；保留原有提示词、原稿和关联素材。",
                                     "多篇同时生成、独立展示；已生成内容不因新一批选择再次生成。完成标签使用黄色，查看完成稿时高亮发光。",

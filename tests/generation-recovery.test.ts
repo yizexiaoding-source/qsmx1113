@@ -33,6 +33,9 @@ test('provider errors stay out of正文 and never switch to Gemini',async()=>{
 test('continuation strips repeated boundary and rejects restarted story',()=>{
  const tail='这是一段已经生成且足够长的故事正文作为衔接。';
  assert.equal(continuationText(tail,tail+'后续。'),'后续。');
+ assert.equal(continuationText('她伸手推开病房门，看见','病房门，看见床头放着一封信。'),'床头放着一封信。');
+ assert.equal(continuationText('她伸手推开病房门，看见','\n\n床头放着一封信。'),'床头放着一封信。');
+ assert.equal(continuationText('窗外下着大雨。\n他站在门口一言不发。\n','（接上文）他站在门口一言不发。\n过了一会儿他开口了。'),'过了一会儿他开口了。');
  assert.throws(()=>continuationText('开'.repeat(100)+'中'.repeat(100)+'尾'.repeat(100),'开'.repeat(100)+'新'),/重复开篇/);
  assert.throws(()=>continuationText(tail,'第二篇\n新小说'),/重新开篇/);
 });

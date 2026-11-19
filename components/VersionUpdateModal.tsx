@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Check, Sparkles, ClipboardDocumentCheck, AdjustmentsHorizontal } from './Icon';
 
-const CURRENT_VERSION = 'v1.10.0';
+const CURRENT_VERSION = 'v1.10.1';
 const STORAGE_KEY = `qisimiaoxie_version_seen_${CURRENT_VERSION}`;
 
 const VersionUpdateModal: React.FC = () => {
@@ -47,42 +47,42 @@ const VersionUpdateModal: React.FC = () => {
                                 奇思妙写 <span className="text-indigo-600 dark:text-indigo-400">{CURRENT_VERSION}</span>
                             </h2>
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-bold tracking-wide">
-                                2026.11.19 · 先选剧情，再开始仿写
+                                2026.11.19 · 意外中断也能无缝继续写完
                             </p>
                         </div>
                     </div>
 
                     <div className="space-y-3.5">
-                        {/* Feature 1: Full-Context AI Semantic Review & Verification */}
+                        {/* Feature 1 */}
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <ClipboardDocumentCheck className="w-4 h-4 text-indigo-500" />
-                                新增五个剧情走向，先选择再仿写
+                                被迫中断支持“继续生成”与“重新生成”
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                保留原稿、类型、视角、补充要求和关联素材，先设计五个剧情方案。支持多选并行生成，各篇独立展示，已生成内容不会随新选择重复生成。
+                                文风仿写与创意生成过程中如遇限流、连接或异常中断，只要已有草稿内容，即与主动暂停一样同时提供「继续生成当前篇」与「重新生成当前篇」，不再被迫丢弃已写好的精彩段落。
                             </p>
                         </div>
 
-                        {/* Feature 2: Floating Toolbar & Clean Summary Header */}
+                        {/* Feature 2 */}
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 flex items-center gap-2">
                                 <AdjustmentsHorizontal className="w-4 h-4 text-sky-500" />
-                                暂停、接续与实际字数
+                                半句续写精准衔接，拒绝重开新篇
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                恢复停止生成；暂停后可继续当前篇或从头重新生成。目标字数使用滑块设置，仿写正文正常结束即标记已完成，展示实际字数，不因篇幅差异判为未完成。
+                                优化续写末尾锚点约束，自动清理“（接上文）”等提示语、消除半句截断或换行差异造成的重复句，并去除半句话中间多余空行，确保前后连贯成一整篇完整正文。
                             </p>
                         </div>
 
-                        {/* Feature 3: Fast Streaming & Multi-Act 10k+ Imitation Generation */}
+                        {/* Feature 3 */}
                         <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
                             <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-300 mb-1.5 flex items-center gap-2">
                                 <Sparkles className="w-4 h-4" />
-                                更清楚的完成与复制反馈
+                                延续 v1.10.0 剧情方案多选与完成提示
                             </h3>
                             <p className="text-xs text-indigo-900 dark:text-indigo-200 leading-relaxed">
-                                完成标签使用黄色，查看当前完成稿时边框发光；复制成功显示三秒提示。Gemini 4 当前接口未传递的温度和 Top P 已标注并禁用。
+                                继续支持五个剧情方案先选再写、并行生成互不覆盖；续写完成后同样自动统计实际字数并展示完成提示。
                             </p>
                         </div>
                     </div>

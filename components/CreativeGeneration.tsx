@@ -19,6 +19,11 @@ interface CreativeGenerationProps {
   initialData?: {
     prompt?: Prompt;
     values?: Record<string, string>;
+    moduleId?: string;
+    imitationManuscript?: {
+      text: string;
+      title?: string;
+    };
   };
   onClearInitialData?: () => void;
 }
@@ -125,6 +130,8 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
     const manuscriptInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+    const [pendingImitationManuscript, setPendingImitationManuscript] = useState<{ text: string; title?: string } | null>(null);
+
     // 新增：用于存储上一次完整的 Prompt，以便在“继续生成”时保持上下文一致性
     const lastPromptRef = useRef<string>('');
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -137,6 +144,18 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
             setSelectedPrompt(initialData.prompt);
             if (initialData.values) {
                 setFormState(initialData.values);
+            }
+            if (onClearInitialData) {
+                onClearInitialData();
+            }
+        } else if (initialData?.moduleId) {
+            const targetModule = CREATIVE_MODULES.find(module => module.id === initialData.moduleId);
+            if (targetModule) {
+                resetState();
+                setSelectedModule(targetModule);
+                if (initialData.imitationManuscript?.text) {
+                    setPendingImitationManuscript(initialData.imitationManuscript);
+                }
             }
             if (onClearInitialData) {
                 onClearInitialData();
@@ -202,6 +221,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         setSuccessMessage('');
         setIsGenerating(false);
         setIsWaitingForFirstChunk(false);
+        setPendingImitationManuscript(null);
         isUserScrollingRef.current = false;
         lastPromptRef.current = '';
         if (abortControllerRef.current) {
@@ -214,6 +234,23 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         setSelectedPrompt(prompt);
         setUploadedManuscriptInfo({});
         setUploadErrors({});
+        if (pendingImitationManuscript?.text) {
+            const isImitate = Boolean(prompt.subCategories?.includes('imitate') || prompt.title.includes('仿写'));
+            const textareaCount = prompt.fields.filter(field => field.type === 'textarea').length;
+            const targetField =
+                prompt.fields.find(f => f.type === 'textarea' && isManuscriptField(f, isImitate, textareaCount)) ||
+                prompt.fields.find(f => f.type === 'textarea');
+            if (targetField) {
+                setFormState(prev => ({ ...prev, [targetField.id]: pendingImitationManuscript.text }));
+                setUploadedManuscriptInfo({
+                    [targetField.id]: {
+                        name: pendingImitationManuscript.title || '来自文章润色',
+                        chars: countContentChars(pendingImitationManuscript.text),
+                    },
+                });
+                setPendingImitationManuscript(null);
+            }
+        }
     };
 
     const handleSelectModule = (m: CreativeModule) => {
@@ -589,7 +626,28 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                         })()}
                                     </div>
                                 ) : (
-                                    <textarea value={freeInput} onChange={e => setFreeInput(e.target.value)} placeholder="请输入您的创作灵感或详细要求..." className="w-full h-40 p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm resize-none shadow-sm transition-all font-sans" />
+                                    <div className="space-y-3">
+                                        {pendingImitationManuscript && (
+                                            <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 text-xs text-sky-800 dark:text-sky-200 space-y-1.5">
+                                                <div className="flex items-center justify-between gap-2 font-bold">
+                                                    <span className="truncate">
+                                                        已从文章润色带入《{pendingImitationManuscript.title || '润色稿件'}》（{countContentChars(pendingImitationManuscript.text)} 字）
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setPendingImitationManuscript(null)}
+                                                        className="text-gray-400 hover:text-rose-500 flex-shrink-0"
+                                                    >
+                                                        清除
+                                                    </button>
+                                                </div>
+                                                <p className="text-[11px] leading-relaxed text-sky-700/90 dark:text-sky-300/90">
+                                                    请在上方点击「选择提示词」选用文风仿写模板，带入的原稿将自动填入「小说原稿」框。
+                                                </p>
+                                            </div>
+                                        )}
+                                        <textarea value={freeInput} onChange={e => setFreeInput(e.target.value)} placeholder="请输入您的创作灵感或详细要求..." className="w-full h-40 p-4 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm resize-none shadow-sm transition-all font-sans" />
+                                    </div>
                                 )}
                             </div>
                         </div>

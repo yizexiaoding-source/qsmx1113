@@ -14,6 +14,7 @@ export type View =
   'inspiration-library' |
   'personal-center' |
   'help' |
+  'article-polish' |
   'manuscript-review';
 
 export interface ModulePromptTemplate {

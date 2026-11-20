@@ -21,6 +21,7 @@ const viewToLabel: Record<View, string> = {
     'prompt-library-novel': '小说提示词库',
     'prompt-library-marketing': '营销提示词库',
     'prompt-library-image': '绘图提示词库',
+    'article-polish': '文章润色',
     'manuscript-review': '审稿',
 };
 

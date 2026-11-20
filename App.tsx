@@ -17,6 +17,7 @@ import PersonalCenter from './components/PersonalCenter';
 import WorkflowManagement from './components/WorkflowManagement';
 import HelpCenter from './components/HelpCenter';
 import ManuscriptReview from './components/ManuscriptReview';
+import ArticlePolish from './components/ArticlePolish';
 
 export type Theme = 'light' | 'dark';
 
@@ -42,8 +43,15 @@ const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // State to pass prompt data from Library to Generation
-  const [generationParams, setGenerationParams] = useState<{prompt?: Prompt, values?: Record<string, string>}>({});
+  // State to pass prompt data or polished manuscript to Generation
+  const [generationParams, setGenerationParams] = useState<{
+    prompt?: Prompt;
+    values?: Record<string, string>;
+    moduleId?: string;
+    imitationManuscript?: { text: string; title?: string };
+  }>({});
+  const [polishHasUnsaved, setPolishHasUnsaved] = useState(false);
+  const [pendingNavView, setPendingNavView] = useState<View | null>(null);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -99,6 +107,22 @@ const App: React.FC = () => {
     setActiveView('creative-generation');
   };
 
+  const handleSendPolishToImitate = (content: string, title: string) => {
+    setGenerationParams({
+      moduleId: 'imitate-style',
+      imitationManuscript: { text: content, title },
+    });
+    setActiveView('creative-generation');
+  };
+
+  const handleSidebarViewChange = (nextView: View) => {
+    if (activeView === 'article-polish' && nextView !== 'article-polish' && polishHasUnsaved) {
+      setPendingNavView(nextView);
+      return;
+    }
+    setActiveView(nextView);
+  };
+
   if (passwordRecovery) {
     return <PasswordRecovery onDone={() => {
       sessionStorage.removeItem('password_recovery_pending');
@@ -125,10 +149,46 @@ const App: React.FC = () => {
       
       {(isAuthenticated || isGuestMode) && (
           <>
+            {pendingNavView && (
+              <div
+                className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center p-4 backdrop-blur-sm"
+                onClick={() => setPendingNavView(null)}
+              >
+                <div
+                  className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-gray-200 dark:border-gray-800"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <h3 className="text-base font-bold text-gray-900 dark:text-white">离开文章润色前请确认</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 leading-relaxed">
+                    当前文章润色工作区存在尚未另存为新版本的结果（草稿已自动暂存在「最近的润色」列表中）。确定切换至其他页面吗？
+                  </p>
+                  <div className="mt-6 flex justify-end gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setPendingNavView(null)}
+                      className="px-4 py-2 rounded-lg text-xs font-semibold text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                    >
+                      留在当前页
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = pendingNavView;
+                        setPendingNavView(null);
+                        setActiveView(target);
+                      }}
+                      className="px-4 py-2 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white"
+                    >
+                      仍要离开
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             <VersionUpdateModal /> {/* Add VersionUpdateModal here */}
             <Sidebar 
                 activeView={activeView} 
-                setActiveView={setActiveView} 
+                setActiveView={handleSidebarViewChange} 
                 isCollapsed={isSidebarCollapsed}
                 toggleSidebar={toggleSidebar}
                 theme={theme}
@@ -206,6 +266,14 @@ const App: React.FC = () => {
 
                 <div className={activeView === 'script-management' ? 'block h-full' : 'hidden h-full'}>
                     <ScriptManagement isActive={activeView === 'script-management'} />
+                </div>
+
+                <div className={activeView === 'article-polish' ? 'block h-full' : 'hidden h-full'}>
+                    <ArticlePolish
+                        isActive={activeView === 'article-polish'}
+                        onSendToImitate={handleSendPolishToImitate}
+                        onUnsavedStateChange={setPolishHasUnsaved}
+                    />
                 </div>
 
                 <div className={activeView === 'manuscript-review' ? 'block h-full' : 'hidden h-full'}>

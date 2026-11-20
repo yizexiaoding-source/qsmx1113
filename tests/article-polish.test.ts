@@ -6,7 +6,11 @@ import {
   buildLightDiffSegments,
   applyLightChangesToText,
   parseSkeletonResponse,
+  buildLightPolishPrompt,
   buildDeepRewritePrompt,
+  computeDeepRewriteExecutionBudget,
+  extractCharTargetFromText,
+  buildEditorialSuggestionsPrompt,
   parseConsistencyDeviations,
   locateQuoteInText,
   parseEditorialSuggestionsResponse,
@@ -15,6 +19,7 @@ import {
   spliceScopeResultIntoFullText,
   supportsSamplingParams,
   createInitialTask,
+  normalizePolishTaskRecord,
 } from '../utils/articlePolishEngine.ts';
 
 test('splitLightPolishOutput strips think blocks, hides partial streaming delimiter, and parses notes', () => {
@@ -191,4 +196,128 @@ test('sampling params availability and initial task defaults reflect real backen
   const task = createInitialTask('测试文稿');
   assert.equal(task.title, '测试文稿');
   assert.equal(task.versions.length, 0);
+  assert.equal(task.light.extraNotes, '');
+  assert.equal(task.light.targetChars, 0);
+  assert.equal(task.deep.preserveStyle, true);
+  assert.equal(task.deep.settingChanges, '');
+  assert.equal(task.deep.plotChanges, '');
+});
+
+test('light polish & deep rewrite prompts apply extra requirements, preserveStyle, setting/plot changes, and targetChars bounds', () => {
+  const lightPrompt = buildLightPolishPrompt({
+    text: '天色渐暗，他走在长街上。',
+    focuses: ['trim_fluff'],
+    extraNotes: '保留冷硬叙事口吻，强化环境压迫感',
+    targetChars: 1500,
+  });
+  assert.ok(lightPrompt.includes('作者补充润色要求'));
+  assert.ok(lightPrompt.includes('保留冷硬叙事口吻，强化环境压迫感'));
+  assert.ok(lightPrompt.includes('约 1500 字'));
+
+  const skeleton = parseSkeletonResponse(
+    JSON.stringify({
+      characters: '陈默、沈青',
+      events: ['1. 雨夜对峙'],
+      conflict: '信任危机',
+      pacing: '紧凑',
+      details: '怀表',
+      ending: '分道扬镳',
+    })
+  );
+  const deepPrompt = buildDeepRewritePrompt({
+    sourceText: '陈默站在雨里看着沈青。',
+    skeleton,
+    perspective: '保持原稿人称与视角',
+    endingPreference: '保持原稿结局',
+    preserveStyle: true,
+    customConstraints: '1. 全程保持克制冷峻的白描，绝不浮夸煽情\n2. 节奏紧凑，结尾留白',
+    settingChanges: '时代背景调整为近未来都市',
+    plotChanges: '中段提前暴露怀表秘密',
+    styleNotes: '短句为主，减少空洞抒情',
+    targetChars: 2000,
+  });
+  assert.ok(deepPrompt.includes('作者自定义改写方向与约束目标'));
+  assert.ok(deepPrompt.includes('全程保持克制冷峻的白描'));
+  assert.ok(deepPrompt.includes('高度保持原稿的文风基调'));
+  assert.ok(deepPrompt.includes('时代背景调整为近未来都市'));
+  assert.ok(deepPrompt.includes('中段提前暴露怀表秘密'));
+  assert.ok(deepPrompt.includes('目标字数 2000 字'));
+  assert.ok(deepPrompt.includes('去浮夸与严禁冗杂铁律'));
+  assert.ok(deepPrompt.includes('坚决去浮夸'));
+});
+
+test('computeDeepRewriteExecutionBudget constrains word count for explicit targets, freeform constraints, and auto mode', () => {
+  assert.equal(extractCharTargetFromText('控制在1800字以内，节奏紧凑'), 1800);
+  assert.equal(extractCharTargetFromText('全文约两千字，不要浮夸'), 2000);
+  assert.equal(extractCharTargetFromText('只改对话，不限字数'), null);
+
+  // 1. Explicit targetChars from TargetLength
+  const explicitBudget = computeDeepRewriteExecutionBudget({
+    sourceChars: 1200,
+    targetChars: 5000,
+  });
+  assert.equal(explicitBudget.explicitTarget, true);
+  assert.equal(explicitBudget.effectiveTargetChars, 5000);
+  assert.equal(explicitBudget.useStageControl, true);
+  assert.ok(explicitBudget.maxOutputTokens <= 32768);
+
+  // 2. Char limit parsed from freeform customConstraints when TargetLength is 0
+  const customBudget = computeDeepRewriteExecutionBudget({
+    sourceChars: 1500,
+    targetChars: 0,
+    customConstraints: '严格控制在 1600 字左右，不准注水',
+  });
+  assert.equal(customBudget.explicitTarget, true);
+  assert.equal(customBudget.effectiveTargetChars, 1600);
+  assert.equal(customBudget.useStageControl, false);
+  assert.ok(customBudget.maxOutputTokens < 8000);
+
+  // 3. Auto mode (targetChars = 0, no number in constraints): tightly anchored near sourceChars
+  const autoBudget = computeDeepRewriteExecutionBudget({
+    sourceChars: 1200,
+    targetChars: 0,
+    customConstraints: '去浮夸，保持冷峻感',
+  });
+  assert.equal(autoBudget.explicitTarget, false);
+  assert.equal(autoBudget.effectiveTargetChars, 1200);
+  assert.equal(autoBudget.minBound, 1020);
+  assert.equal(autoBudget.maxBound, 1344);
+  assert.ok(autoBudget.maxOutputTokens <= 6000);
+});
+
+test('buildEditorialSuggestionsPrompt focuses on content appeal distinct from manuscript review and injects extraNotes', () => {
+  const prompt = buildEditorialSuggestionsPrompt({
+    text: '陈默推门走进会议室，大家都没有说话。',
+    focuses: ['story_appeal', 'conflict_tension'],
+    extraNotes: '帮我看看开篇钩子够不够强，中段如何增加人物博弈感',
+  });
+  assert.ok(prompt.includes('严禁与“审稿”功能重复'));
+  assert.ok(prompt.includes('不要排查错别字'));
+  assert.ok(prompt.includes('精彩度与开篇钩子'));
+  assert.ok(prompt.includes('冲突张力与反转看点'));
+  assert.ok(prompt.includes('帮我看看开篇钩子够不够强'));
+});
+
+test('normalizePolishTaskRecord backfills legacy stored tasks and migrates legacy editorial focuses safely', () => {
+  const legacy: any = {
+    id: 'legacy-1',
+    title: '旧版任务',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    activeMode: 'deep',
+    originalText: '旧稿内容',
+    light: { focuses: ['trim_fluff'], prosePreview: '' },
+    deep: { step: 'settings', rewrittenText: '', styleNotes: '简练' },
+    editorial: { focuses: ['redundancy'] },
+    versions: [],
+  };
+  const normalized = normalizePolishTaskRecord(legacy);
+  assert.equal(normalized.light.extraNotes, '');
+  assert.equal(normalized.light.targetChars, 0);
+  assert.equal(normalized.deep.preserveStyle, true);
+  assert.equal(normalized.deep.customConstraints, '');
+  assert.equal(normalized.deep.settingChanges, '');
+  assert.equal(normalized.deep.plotChanges, '');
+  assert.equal(normalized.editorial.extraNotes, '');
+  assert.deepEqual(normalized.editorial.focuses, ['scene_craft']);
+  assert.equal(normalized.editorial.workingText, '旧稿内容');
 });

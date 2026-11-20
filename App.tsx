@@ -18,6 +18,7 @@ import WorkflowManagement from './components/WorkflowManagement';
 import HelpCenter from './components/HelpCenter';
 import ManuscriptReview from './components/ManuscriptReview';
 import ArticlePolish from './components/ArticlePolish';
+import { WorkbenchDraftRecord } from './utils/workbenchDrafts';
 
 export type Theme = 'light' | 'dark';
 
@@ -43,13 +44,23 @@ const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // State to pass prompt data or polished manuscript to Generation
+  // State to pass prompt data or polished manuscript / draft restore to Generation
   const [generationParams, setGenerationParams] = useState<{
     prompt?: Prompt;
     values?: Record<string, string>;
     moduleId?: string;
     imitationManuscript?: { text: string; title?: string };
+    draftRestore?: WorkbenchDraftRecord | null;
+    draftUpdatedReq?: { note?: string; model?: string; targetChars?: number } | null;
   }>({});
+  const [pendingPolishDraft, setPendingPolishDraft] = useState<{
+    draft: WorkbenchDraftRecord;
+    updatedReq?: { note?: string; model?: string; targetChars?: number };
+  } | null>(null);
+  const [pendingReviewDraft, setPendingReviewDraft] = useState<{
+    draft: WorkbenchDraftRecord;
+    updatedReq?: { note?: string; model?: string; targetChars?: number };
+  } | null>(null);
   const [polishHasUnsaved, setPolishHasUnsaved] = useState(false);
   const [pendingNavView, setPendingNavView] = useState<View | null>(null);
 
@@ -115,6 +126,29 @@ const App: React.FC = () => {
     setActiveView('creative-generation');
   };
 
+  const handleOpenDraft = (
+    draft: WorkbenchDraftRecord,
+    updatedReq?: { note?: string; model?: string; targetChars?: number }
+  ) => {
+    if (draft.category === 'imitate') {
+      setGenerationParams({
+        draftRestore: draft,
+        draftUpdatedReq: updatedReq || null,
+      });
+      setActiveView('creative-generation');
+      return;
+    }
+    if (draft.category === 'polish') {
+      setPendingPolishDraft({ draft, updatedReq });
+      setActiveView('article-polish');
+      return;
+    }
+    if (draft.category === 'review') {
+      setPendingReviewDraft({ draft, updatedReq });
+      setActiveView('manuscript-review');
+    }
+  };
+
   const handleSidebarViewChange = (nextView: View) => {
     if (activeView === 'article-polish' && nextView !== 'article-polish' && polishHasUnsaved) {
       setPendingNavView(nextView);
@@ -160,7 +194,7 @@ const App: React.FC = () => {
                 >
                   <h3 className="text-base font-bold text-gray-900 dark:text-white">离开文章润色前请确认</h3>
                   <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 leading-relaxed">
-                    当前文章润色工作区存在尚未另存为新版本的结果（草稿已自动暂存在「最近的润色」列表中）。确定切换至其他页面吗？
+                    当前文章润色工作区存在尚未另存为新版本的结果（草稿已自动暂存在「最近的润色」及「个人中心 · 我的草稿」中）。确定切换至其他页面吗？
                   </p>
                   <div className="mt-6 flex justify-end gap-2.5">
                     <button
@@ -273,15 +307,27 @@ const App: React.FC = () => {
                         isActive={activeView === 'article-polish'}
                         onSendToImitate={handleSendPolishToImitate}
                         onUnsavedStateChange={setPolishHasUnsaved}
+                        draftToRestore={pendingPolishDraft?.draft || null}
+                        draftUpdatedReq={pendingPolishDraft?.updatedReq || null}
+                        onDraftRestored={() => setPendingPolishDraft(null)}
                     />
                 </div>
 
                 <div className={activeView === 'manuscript-review' ? 'block h-full' : 'hidden h-full'}>
-                    <ManuscriptReview isActive={activeView === 'manuscript-review'} />
+                    <ManuscriptReview
+                        isActive={activeView === 'manuscript-review'}
+                        draftToRestore={pendingReviewDraft?.draft || null}
+                        draftUpdatedReq={pendingReviewDraft?.updatedReq || null}
+                        onDraftRestored={() => setPendingReviewDraft(null)}
+                    />
                 </div>
 
                 <div className={activeView === 'personal-center' ? 'block h-full' : 'hidden h-full'}>
-                    <PersonalCenter onLogout={handleLogout} />
+                    <PersonalCenter
+                        onLogout={handleLogout}
+                        isActive={activeView === 'personal-center'}
+                        onOpenDraft={handleOpenDraft}
+                    />
                 </div>
 
                 <div className={activeView === 'help' ? 'block h-full' : 'hidden h-full'}>

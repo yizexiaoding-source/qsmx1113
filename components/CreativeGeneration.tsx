@@ -1,19 +1,27 @@
 import ImitationDirections from './ImitationDirections';
 import TargetLength from './TargetLength';
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { CREATIVE_MODULES } from '../constants';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { CREATIVE_MODULES, PROMPTS } from '../constants';
 import CreativeCard from './CreativeCard';
-import { CreativeModule, Asset, Prompt } from '../types';
+import { CreativeModule, Asset, Prompt, PromptCategory } from '../types';
 import { generateTextStream, countContentChars, GenerationInterrupted, resolveStoryTarget } from '../services/geminiService';
-import { ChevronDoubleLeft, Sparkles, Copy, Database, AdjustmentsHorizontal, Search, DocumentText, X, BookOpen, ChevronDown, Check, Stop, InformationCircle, ArrowPath, Play, CloudArrowUp, Trash } from './Icon';
+import { ChevronDoubleLeft, Sparkles, Copy, Database, AdjustmentsHorizontal, Search, DocumentText, X, BookOpen, ChevronDown, Check, Stop, InformationCircle, ArrowPath, Play, CloudArrowUp, Trash, FloppyDisk } from './Icon';
 import PromptSelectionModal from './PromptSelectionModal';
 import AssetSelectionModal from './AssetSelectionModal'; 
-import { saveMaterial, incrementPromptHeat, fetchMaterials } from '../services/supabaseService';
+import { saveMaterial, incrementPromptHeat, fetchMaterials, getCurrentUserId, fetchPrompts } from '../services/supabaseService';
 import LoadingOverlay from './LoadingOverlay';
 import ImportAssetModal from './ImportAssetModal';
 import CustomSelect from './CustomSelect';
 import { extractTextFromFile, isManuscriptField } from '../utils/fileText';
+import {
+  WorkbenchDraftRecord,
+  ImitateDraftPayload,
+  ImitationDraftSlot,
+  saveWorkbenchDraft,
+  buildDraftPreview,
+  deriveDraftTitle,
+} from '../utils/workbenchDrafts';
 
 interface CreativeGenerationProps {
   initialData?: {
@@ -24,6 +32,8 @@ interface CreativeGenerationProps {
       text: string;
       title?: string;
     };
+    draftRestore?: WorkbenchDraftRecord | null;
+    draftUpdatedReq?: { note?: string; model?: string; targetChars?: number } | null;
   };
   onClearInitialData?: () => void;
 }
@@ -131,17 +141,298 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     const manuscriptInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
     const [pendingImitationManuscript, setPendingImitationManuscript] = useState<{ text: string; title?: string } | null>(null);
+    const [restoredImitationState, setRestoredImitationState] = useState<ImitateDraftPayload['imitationState'] | null>(null);
+    const [draftRestoreNote, setDraftRestoreNote] = useState('');
+    const [manualDraftMsg, setManualDraftMsg] = useState('');
 
     // 新增：用于存储上一次完整的 Prompt，以便在“继续生成”时保持上下文一致性
     const lastPromptRef = useRef<string>('');
     const abortControllerRef = useRef<AbortController | null>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isUserScrollingRef = useRef(false);
+    const userIdRef = useRef<string | null>(null);
+    const imitationSnapshotRef = useRef<ImitateDraftPayload['imitationState'] | null>(null);
+    const latestWorkbenchRef = useRef<{
+        selectedModule: CreativeModule | null;
+        selectedPrompt: Prompt | null;
+        formState: Record<string, string>;
+        freeInput: string;
+        selectedAssetIds: Set<string>;
+        model: string;
+        temperature: number;
+        topP: number;
+        targetChars: number;
+        generatedText: string;
+        imitationMode: boolean;
+    }>({
+        selectedModule: null,
+        selectedPrompt: null,
+        formState: {},
+        freeInput: '',
+        selectedAssetIds: new Set(),
+        model: 'deepseek-chat',
+        temperature: 1,
+        topP: 0.95,
+        targetChars: 0,
+        generatedText: '',
+        imitationMode: false,
+    });
 
     useEffect(() => {
+        getCurrentUserId()
+            .then((uid) => {
+                userIdRef.current = uid;
+            })
+            .catch(() => {
+                userIdRef.current = null;
+            });
+    }, []);
+
+    const saveCreativeDraft = useCallback(
+        (
+            saveType: 'manual' | 'auto',
+            statusOverride?: string,
+            imitationOverride?: ImitateDraftPayload['imitationState']
+        ) => {
+            const snap = latestWorkbenchRef.current;
+            if (!snap.selectedModule) return null;
+            const imitationData = snap.imitationMode
+                ? (imitationOverride || imitationSnapshotRef.current || undefined)
+                : undefined;
+            const hasFieldValues = Object.values(snap.formState).some((v) => String(v || '').trim().length > 0);
+            const hasImitationPlans = Boolean(imitationData?.plans?.length);
+            const hasImitationDrafts = Boolean(
+                imitationData?.drafts &&
+                (Object.values(imitationData.drafts) as ImitationDraftSlot[]).some((d) => Boolean(d?.text?.trim()))
+            );
+            const hasContent = Boolean(
+                snap.selectedPrompt ||
+                snap.freeInput.trim() ||
+                hasFieldValues ||
+                snap.generatedText.trim() ||
+                hasImitationPlans ||
+                hasImitationDrafts
+            );
+            if (!hasContent) return null;
+
+            const activeDraftSlot =
+                imitationData?.drafts?.[imitationData.active] ||
+                (imitationData?.drafts
+                    ? (Object.values(imitationData.drafts) as ImitationDraftSlot[]).find((d) => Boolean(d?.text?.trim()))
+                    : undefined);
+            const outputText = snap.imitationMode
+                ? (activeDraftSlot?.text ||
+                    (imitationData?.plans || [])
+                        .map((p, i) => `方案${i + 1}：${p.title}\n${p.summary}`)
+                        .join('\n\n'))
+                : snap.generatedText;
+
+            const nonManuscriptValues = snap.selectedPrompt
+                ? snap.selectedPrompt.fields
+                      .filter((f) => String(snap.formState[f.id] || '').trim().length > 0 && countContentChars(snap.formState[f.id] || '') <= 300)
+                      .map((f) => `${f.label}：${String(snap.formState[f.id] || '').trim()}`)
+                : [];
+            const requirementsParts = [
+                snap.selectedPrompt ? `模板：${snap.selectedPrompt.title}` : '',
+                ...nonManuscriptValues,
+                !snap.selectedPrompt && snap.freeInput.trim() ? `要求：${buildDraftPreview(snap.freeInput, 80)}` : '',
+                snap.targetChars > 0 ? `目标字数：${snap.targetChars} 字` : '',
+            ].filter(Boolean);
+
+            const longestFieldText = Object.values(snap.formState)
+                .map((v) => String(v || ''))
+                .sort((a, b) => b.length - a.length)[0] || '';
+            const sourceText = longestFieldText || snap.freeInput || '';
+
+            const payload: ImitateDraftPayload = {
+                mode: snap.imitationMode ? 'directions' : 'standard',
+                moduleId: snap.selectedModule.id,
+                moduleTitle: snap.selectedModule.title,
+                promptId: snap.selectedPrompt?.id,
+                promptTitle: snap.selectedPrompt?.title,
+                formState: { ...snap.formState },
+                freeInput: snap.freeInput,
+                selectedAssetIds: Array.from(snap.selectedAssetIds),
+                model: snap.model,
+                temperature: snap.temperature,
+                topP: snap.topP,
+                targetChars: snap.targetChars,
+                generatedText: snap.generatedText,
+                imitationState: imitationData,
+            };
+
+            const titleBase = snap.selectedPrompt?.title
+                ? `${snap.selectedModule.title} · ${snap.selectedPrompt.title}`
+                : deriveDraftTitle(outputText || sourceText, snap.selectedModule.title);
+
+            const saved = saveWorkbenchDraft(userIdRef.current, {
+                autoSlotKey: saveType === 'auto' ? `auto-imitate-${snap.selectedModule.id}` : undefined,
+                category: 'imitate',
+                saveType,
+                title: titleBase,
+                model: snap.model,
+                requirementsNote: requirementsParts.join('；') || snap.selectedModule.title,
+                outputPreview: buildDraftPreview(outputText || sourceText, 140),
+                outputCharCount: countContentChars(activeDraftSlot?.text || snap.generatedText || ''),
+                sourceCharCount: countContentChars(sourceText),
+                statusLabel: statusOverride || (saveType === 'auto' ? '退出自动保留' : '手动存为草稿'),
+                payload,
+            });
+
+            if (saveType === 'manual') {
+                setManualDraftMsg('已存为草稿（可在个人中心 · 我的草稿查看）');
+                setTimeout(() => setManualDraftMsg(''), 3200);
+            }
+            return saved;
+        },
+        []
+    );
+
+    useEffect(() => {
+        if (initialData?.draftRestore) {
+            const payload = initialData.draftRestore.payload as ImitateDraftPayload;
+            const req = initialData.draftUpdatedReq;
+            const targetModule =
+                CREATIVE_MODULES.find((m) => m.id === payload.moduleId) ||
+                CREATIVE_MODULES.find((m) => m.id === 'imitate-style') ||
+                CREATIVE_MODULES[0];
+
+            const nextModel = req?.model || payload.model || 'deepseek-chat';
+            const nextTargetChars = req?.targetChars !== undefined ? req.targetChars : (payload.targetChars || 0);
+            const nextNote = req?.note?.trim() || '';
+
+            setSelectedModule(targetModule);
+            setModel(nextModel);
+            setTemperature(typeof payload.temperature === 'number' ? payload.temperature : 1);
+            setTopP(typeof payload.topP === 'number' ? payload.topP : 0.95);
+            setTargetChars(nextTargetChars);
+            setSelectedAssetIds(new Set(payload.selectedAssetIds || []));
+            setGeneratedText(payload.generatedText || '');
+            setCanResume(Boolean(payload.generatedText?.trim()));
+            setGenerationError('');
+            setGenerationStatus(payload.generatedText?.trim() ? '草稿已载入' : '');
+            setDraftRestoreNote(nextNote);
+
+            const restoredForm: Record<string, string> = { ...(payload.formState || {}) };
+            let nextFreeInput = payload.freeInput || '';
+
+            const staticPrompt = payload.promptId ? PROMPTS.find((p) => p.id === payload.promptId) || null : null;
+            const buildFallbackPrompt = (): Prompt | null => {
+                if (!payload.promptId && !payload.promptTitle && Object.keys(restoredForm).length === 0) return null;
+                const keys = Object.keys(restoredForm);
+                const fields = (keys.length > 0 ? keys : ['content']).map((key) => ({
+                    id: key,
+                    label: key === 'content' ? '创作内容' : key,
+                    type: 'textarea' as const,
+                    placeholder: '请输入内容...',
+                }));
+                return {
+                    id: payload.promptId || 'restored-prompt',
+                    title: payload.promptTitle || targetModule.title,
+                    description: '从草稿恢复的提示词模板',
+                    content: '',
+                    category: (targetModule.category || 'general') as PromptCategory,
+                    subCategories: targetModule.subCategories || [],
+                    fields,
+                    template: fields.map((f) => `\${${f.id}}`).join('\n'),
+                    heat: 0,
+                    creator: 'user',
+                };
+            };
+
+            const resolvedPrompt = staticPrompt || buildFallbackPrompt();
+            if (resolvedPrompt && nextNote) {
+                const textareaCount = resolvedPrompt.fields.filter((f) => f.type === 'textarea').length;
+                const nonManuscriptField =
+                    resolvedPrompt.fields.find((f) => !isManuscriptField(f, targetModule.id === 'imitate-style', textareaCount)) ||
+                    resolvedPrompt.fields[0];
+                if (nonManuscriptField) {
+                    const prevVal = restoredForm[nonManuscriptField.id] || '';
+                    if (!prevVal.includes(nextNote)) {
+                        restoredForm[nonManuscriptField.id] = prevVal ? `${prevVal}\n【新要求】${nextNote}` : nextNote;
+                    }
+                }
+            } else if (!resolvedPrompt && nextNote) {
+                if (!nextFreeInput.includes(nextNote)) {
+                    nextFreeInput = nextFreeInput ? `${nextFreeInput}\n【新要求】${nextNote}` : nextNote;
+                }
+            }
+
+            setFormState(restoredForm);
+            setFreeInput(nextFreeInput);
+            setSelectedPrompt(resolvedPrompt);
+
+            if (payload.imitationState) {
+                setRestoredImitationState(payload.imitationState);
+                imitationSnapshotRef.current = payload.imitationState;
+            } else {
+                setRestoredImitationState(null);
+                imitationSnapshotRef.current = null;
+            }
+
+            // Reconstruct prompt ref for immediate "继续生成"
+            const basePrompt = resolvedPrompt
+                ? resolvedPrompt.fields.reduce(
+                      (txt, f) => txt.split('${' + f.id + '}').join(restoredForm[f.id] || ''),
+                      resolvedPrompt.template
+                  )
+                : nextFreeInput;
+            lastPromptRef.current = basePrompt;
+            const resolvedTarget = nextTargetChars || resolveStoryTarget(basePrompt) || undefined;
+            taskOptionsRef.current = {
+                model: nextModel,
+                taskPrompt: basePrompt,
+                temperature: typeof payload.temperature === 'number' ? payload.temperature : 1,
+                topP: typeof payload.topP === 'number' ? payload.topP : 0.95,
+                maxOutputTokens,
+                targetChars: resolvedTarget,
+                stageControl: Boolean(resolvedTarget),
+                autoRecover: true,
+                onStatus: setGenerationStatus,
+            };
+
+            // Hydrate exact DB prompt asynchronously if it wasn't in static PROMPTS
+            if (payload.promptId && !staticPrompt) {
+                fetchPrompts({ category: 'all', limit: 100, search: payload.promptTitle || '' })
+                    .then((dbPrompts: any[]) => {
+                        const hit = (dbPrompts || []).find((p) => p.id === payload.promptId);
+                        if (!hit) return;
+                        let parsedContent: any = {};
+                        try {
+                            parsedContent = JSON.parse(hit.content);
+                        } catch {
+                            parsedContent = { template: hit.content };
+                        }
+                        const hydrated: Prompt = {
+                            id: hit.id,
+                            title: hit.title,
+                            description: parsedContent.description || '用户自定义提示词',
+                            example: parsedContent.example || '',
+                            content: parsedContent.template || hit.content,
+                            category: (hit.main_category === 'long' ? 'long-story' : hit.main_category === 'short' ? 'short-story' : hit.main_category || 'general') as PromptCategory,
+                            subCategories: parsedContent.subCategories || (hit.sub_category ? [hit.sub_category] : []),
+                            fields: parsedContent.fields || [],
+                            template: parsedContent.template || hit.content,
+                            heat: hit.usage_count || 0,
+                            creator: 'user',
+                            authorName: hit.profiles?.username || parsedContent.authorName || '用户',
+                        };
+                        setSelectedPrompt(hydrated);
+                    })
+                    .catch(() => {});
+            }
+
+            if (onClearInitialData) {
+                onClearInitialData();
+            }
+            return;
+        }
+
         if (initialData?.prompt) {
             setSelectedModule(CREATIVE_MODULES.find(module => module.subCategories.some(category => initialData.prompt!.subCategories.includes(category))) || CREATIVE_MODULES[0]);
             setSelectedPrompt(initialData.prompt);
+            setRestoredImitationState(null);
+            setDraftRestoreNote('');
             if (initialData.values) {
                 setFormState(initialData.values);
             }
@@ -207,6 +498,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         setCanResume(true);
         setIsWaitingForFirstChunk(false);
         setShowLoadingOverlay(false);
+        saveCreativeDraft('auto', '暂停生成自动保留');
     };
 
     const resetState = () => {
@@ -222,6 +514,9 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         setIsGenerating(false);
         setIsWaitingForFirstChunk(false);
         setPendingImitationManuscript(null);
+        setRestoredImitationState(null);
+        setDraftRestoreNote('');
+        imitationSnapshotRef.current = null;
         isUserScrollingRef.current = false;
         lastPromptRef.current = '';
         if (abortControllerRef.current) {
@@ -259,6 +554,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
     };
 
     const handleExitModule = () => {
+        saveCreativeDraft('auto', '退出创作区自动保留');
         resetState();
         setSelectedModule(null);
     };
@@ -301,8 +597,41 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         }
     };
 
-    const imitationMode = selectedPrompt?.subCategories?.includes('imitate') || selectedPrompt?.title.includes('仿写');
-    const preparedPrompt = selectedPrompt ? selectedPrompt.fields.reduce((text, f) => text.split('${'+f.id+'}').join(formState[f.id] || ''), selectedPrompt.template) : freeInput;
+    const imitationMode = Boolean(
+        selectedPrompt?.subCategories?.includes('imitate') ||
+        selectedPrompt?.title.includes('仿写') ||
+        Boolean(restoredImitationState)
+    );
+    const preparedPrompt = selectedPrompt
+        ? selectedPrompt.fields.reduce((text, f) => text.split('${' + f.id + '}').join(formState[f.id] || ''), selectedPrompt.template)
+        : freeInput;
+
+    latestWorkbenchRef.current = {
+        selectedModule,
+        selectedPrompt,
+        formState,
+        freeInput,
+        selectedAssetIds,
+        model,
+        temperature,
+        topP,
+        targetChars,
+        generatedText,
+        imitationMode,
+    };
+
+    useEffect(() => {
+        const handleBeforeLeave = () => {
+            saveCreativeDraft('auto', '退出自动保留');
+        };
+        window.addEventListener('beforeunload', handleBeforeLeave);
+        window.addEventListener('pagehide', handleBeforeLeave);
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeLeave);
+            window.removeEventListener('pagehide', handleBeforeLeave);
+            handleBeforeLeave();
+        };
+    }, [saveCreativeDraft]);
 
     const handleGenerate = async () => {
         if (isGenerating) return;
@@ -316,6 +645,9 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
         if (selectedPrompt) {
             incrementPromptHeat(selectedPrompt.id);
             selectedPrompt.fields.forEach(f => basePrompt = basePrompt.replace(new RegExp(`\\$\\{${f.id}\\}`, 'g'), formState[f.id] || ''));
+        }
+        if (draftRestoreNote && !basePrompt.includes(draftRestoreNote)) {
+            basePrompt += `\n\n【补充/新要求】\n${draftRestoreNote}`;
         }
         const assetContext = Array.from(selectedAssetIds).map(id => assets.find(a => a.id === id)).filter(Boolean).map(a => `【参考：${a!.name}】\n${a!.content}`).join('\n\n');
         
@@ -354,6 +686,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                 const errMsg = e?.message || '生成请求异常，请重试或切换其他模型。';
                 setGenerationError(errMsg); setGenerationStatus('生成未完成');
                 setCanResume(Boolean(completedText.trim()) || (e instanceof GenerationInterrupted && e.recoverable));
+                saveCreativeDraft('auto', '生成中断自动保留');
             }
         } finally {
             setIsGenerating(false);
@@ -384,6 +717,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
             if (!controller.signal.aborted && e?.message !== 'Aborted') {
                 setGenerationError(e.message || '恢复失败，草稿已保留'); setGenerationStatus('生成未完成');
                 setCanResume(Boolean(latestText.trim()) || (e instanceof GenerationInterrupted && e.recoverable));
+                saveCreativeDraft('auto', '续写中断自动保留');
             }
         } finally { setIsGenerating(false); }
     };
@@ -421,10 +755,25 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
             {promptModalOpen && <PromptSelectionModal isOpen={promptModalOpen} onClose={() => setPromptModalOpen(false)} onSelect={handleSelectPrompt} initialSubCategory={selectedModule.subCategories[0] as any} />}
             <AssetSelectionModal isOpen={assetModalOpen} onClose={() => setAssetModalOpen(false)} assets={assets} selectedAssetIds={selectedAssetIds} onToggleAsset={(id) => setSelectedAssetIds(prev => { const next = new Set(prev); if(next.has(id)) next.delete(id); else next.add(id); return next; })} />
 
-            <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-gray-200 bg-white dark:bg-gray-900 z-20 shadow-sm font-sans">
+            <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-3 p-4 border-b border-gray-200 bg-white dark:bg-gray-900 z-20 shadow-sm font-sans">
                 <div className="flex items-center gap-3">
                     <button onClick={handleExitModule} className="p-2 rounded-full hover:bg-gray-100 text-gray-500"><ChevronDoubleLeft className="w-5 h-5" /></button>
                     <h2 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">{selectedModule.title}</h2>
+                </div>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                    {manualDraftMsg && (
+                        <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                            {manualDraftMsg}
+                        </span>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => saveCreativeDraft('manual', '手动存为草稿')}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/30 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/40 text-xs font-bold transition-colors whitespace-nowrap"
+                    >
+                        <FloppyDisk className="w-4 h-4" />
+                        <span>存为草稿</span>
+                    </button>
                 </div>
             </div>
 
@@ -505,6 +854,18 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                 创作内容
                             </div>
                             <div className="bg-emerald-50/20 dark:bg-emerald-900/5 p-4 rounded-2xl border border-emerald-100/50 space-y-5">
+                                {draftRestoreNote && !imitationMode && (
+                                    <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 text-xs text-sky-800 dark:text-sky-200 flex items-center justify-between gap-2">
+                                        <span>已从草稿载入新要求：「{draftRestoreNote}」，可直接点击下方「开始创作」。</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => setDraftRestoreNote('')}
+                                            className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                                        >
+                                            ×
+                                        </button>
+                                    </div>
+                                )}
                                 {selectedPrompt ? (
                                     <div className="space-y-5 animate-fade-in">
                                         {(() => {
@@ -580,7 +941,7 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                                 {f.type === 'file' ? (
                                                     <div className="w-full p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl transition-all font-sans">
                                                         <input 
-                                                            type="file"
+                                                            type="file" 
                                                             multiple
                                                             accept=".txt,.md,.docx,.json,.csv"
                                                             onChange={(e) => handleFileChange(e, f.id)}
@@ -664,7 +1025,26 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                     <div className="w-full bg-white dark:bg-gray-900 h-full shadow-sm flex flex-col relative overflow-hidden font-sans">
                         {imitationMode ? (() => {
                             const imitationTarget = targetChars || resolveStoryTarget(preparedPrompt) || undefined;
-                            return <ImitationDirections prompt={preparedPrompt + Array.from(selectedAssetIds).map(id=>assets.find(a=>a.id===id)?.content || '').join('\n')} options={{model,temperature,topP,maxOutputTokens,targetChars:imitationTarget,stageControl:true,bodyInstruction:imitationTarget?TARGET_LENGTH_INSTRUCTION:FORCE_LONG_INSTRUCTION}} />;
+                            const promptWithAssets =
+                                preparedPrompt +
+                                Array.from(selectedAssetIds).map(id => assets.find(a => a.id === id)?.content || '').join('\n') +
+                                (draftRestoreNote && !preparedPrompt.includes(draftRestoreNote) ? `\n【补充/新要求】${draftRestoreNote}` : '');
+                            return (
+                                <ImitationDirections
+                                    prompt={promptWithAssets}
+                                    options={{ model, temperature, topP, maxOutputTokens, targetChars: imitationTarget, stageControl: true, bodyInstruction: imitationTarget ? TARGET_LENGTH_INSTRUCTION : FORCE_LONG_INSTRUCTION }}
+                                    initialDraftState={restoredImitationState}
+                                    draftRestoreNote={draftRestoreNote}
+                                    onStateChange={(state) => {
+                                        imitationSnapshotRef.current = state;
+                                    }}
+                                    onSaveManualDraft={() => saveCreativeDraft('manual', '手动存为草稿')}
+                                    onAutoSaveDraft={(reason, latestState) => {
+                                        if (latestState) imitationSnapshotRef.current = latestState;
+                                        saveCreativeDraft('auto', reason, latestState);
+                                    }}
+                                />
+                            );
                         })() : !generatedText && !isWaitingForFirstChunk && !generationError && !canResume ? (
                             <div className="flex-1 flex flex-col items-center justify-center text-gray-400 opacity-50 p-8"><Sparkles className="w-20 h-20 mb-6" /><p className="text-lg font-medium">在左侧输入灵感，开启 AI 创作之旅</p></div>
                         ) : (
@@ -680,9 +1060,10 @@ const CreativeGeneration: React.FC<CreativeGenerationProps> = ({ initialData, on
                                             </span>
                                         )}
                                     </div>
-                                    <div className="flex gap-2">
-                                        <button onClick={() => { navigator.clipboard.writeText(generatedText); setSuccessMessage('已复制'); setShowInlineSuccess(true); setTimeout(()=>setShowInlineSuccess(false),3000); }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-lg bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors font-sans"><Copy className="w-4 h-4" /> 复制</button>
-                                        <button onClick={() => setImportModalOpen(true)} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors font-sans"><Database className="w-4 h-4" /> 导入素材库</button>
+                                    <div className="flex gap-2 flex-wrap">
+                                        <button onClick={() => { navigator.clipboard.writeText(generatedText); setSuccessMessage('已复制'); setShowInlineSuccess(true); setTimeout(()=>setShowInlineSuccess(false),3000); }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-lg bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors font-sans whitespace-nowrap"><Copy className="w-4 h-4" /> 复制</button>
+                                        <button onClick={() => setImportModalOpen(true)} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors font-sans whitespace-nowrap"><Database className="w-4 h-4" /> 导入素材库</button>
+                                        <button onClick={() => saveCreativeDraft('manual', '手动存为草稿')} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors font-sans whitespace-nowrap"><FloppyDisk className="w-4 h-4" /> 存为草稿</button>
                                     </div>
                                 </div>
                                 <div role="status" aria-live="polite" className="px-8 py-3 border-b text-sm text-sky-700 bg-sky-50 dark:bg-gray-800 dark:text-sky-300">

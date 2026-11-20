@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Check, Sparkles, AdjustmentsHorizontal, DocumentPlus, Pencil, ArrowPath } from './Icon';
+import { X, Check, Sparkles, PaintBrush, Pencil, ClipboardDocumentCheck, FloppyDisk } from './Icon';
 
-const CURRENT_VERSION = 'v2.0.0';
+const CURRENT_VERSION = 'v2.1.0';
 const STORAGE_KEY = `qisimiaoxie_version_seen_${CURRENT_VERSION}`;
 
 const VersionUpdateModal: React.FC = () => {
@@ -47,7 +47,7 @@ const VersionUpdateModal: React.FC = () => {
                                 奇思妙写 <span className="text-indigo-600 dark:text-indigo-400">{CURRENT_VERSION}</span>
                             </h2>
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-bold tracking-wide">
-                                2026.11.19 · 仿写工作流升级，生成体验更稳定
+                                2026.11.19 · 全新「文章润色」与全局「我的草稿」正式上线
                             </p>
                         </div>
                     </div>
@@ -55,41 +55,41 @@ const VersionUpdateModal: React.FC = () => {
                     <div className="space-y-3">
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-3.5 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
-                                <DocumentPlus className="w-4 h-4 text-sky-500" />
-                                文风仿写支持一键「上传原稿」
+                                <PaintBrush className="w-4 h-4 text-sky-500" />
+                                全新「文章润色」三大独立模式
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                在文风仿写「小说原稿」框内支持直接点击上传或拖拽文件导入（兼容 .txt、.md、.docx 及常见编码格式），整本小说无需手动分段复制粘贴即可直接开写。
+                                左侧导航新增「文章润色」，支持「轻度润色」「深度重写」「编辑建议」三大独立工作区。支持文件/作品导入与局部选段处理，原稿始终独立保留，修改结果另存为新版本，并可一键带入文风仿写。
                             </p>
                         </div>
 
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-3.5 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
-                                <Pencil className="w-4 h-4 text-indigo-500" />
-                                支持手动编辑与微调剧情方案
+                                <Pencil className="w-4 h-4 text-purple-500" />
+                                轻度精修与可控方向的深度重写
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                生成剧情走向后，可在详情区点击「编辑方案」自由修改标题、剧情概括、主要事件与节奏，确认后再生成正文，让后续故事更契合您的创作构想。
+                                轻度润色支持补充润色要求、逐句对照理由并单条或批量采纳；深度重写支持先锁定故事骨架（随时解锁微调），再自由输入改写方向与约束目标，保持克制文风、去浮夸并严控篇幅，中断支持一键继续生成。
                             </p>
                         </div>
 
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-3.5 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
-                                <ArrowPath className="w-4 h-4 text-emerald-500" />
-                                原页重设方案与模型切换更流畅
+                                <ClipboardDocumentCheck className="w-4 h-4 text-amber-500" />
+                                编辑建议：内容精彩度与行文优化
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                在文风仿写当前页更换文章、调整要求或切换不同模型后重新生成方案，支持实时查看生成进度并可随时取消与即时切换模型重跑，响应更快更顺畅。
+                                区别于「审稿」查错查重，聚焦开篇钩子、冲突张力、人物对话火花、画面感与情绪节奏，支持填写自定义优化方向；点击建议自动定位高亮原文，可微调建议稿后逐条采纳。
                             </p>
                         </div>
 
                         <div className="bg-gray-50 dark:bg-gray-800/50 p-3.5 rounded-xl border border-gray-100 dark:border-gray-700">
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
-                                <AdjustmentsHorizontal className="w-4 h-4 text-amber-500" />
-                                目标字数更精准，千问 / DeepSeek 更稳定
+                                <FloppyDisk className="w-4 h-4 text-emerald-500" />
+                                全局「我的草稿」与退出自动暂存
                             </h3>
                             <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                                成文篇幅可更稳定地贴近预设目标字数范围（±1000 字内）；同时提升千问与 DeepSeek 模型长文生成与剧情策划的连接稳定性，遇到异常时完整保留草稿。
+                                「个人中心」新增「我的草稿」，按仿写、润色、审稿分区管理。工作台支持手动保存草稿及切换离开/异常退出自动暂存，随时一键复用或重新输入修改要求继续生成。
                             </p>
                         </div>
                     </div>

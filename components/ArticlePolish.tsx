@@ -59,6 +59,7 @@ import {
   buildExtractSkeletonPrompt,
   parseSkeletonResponse,
   buildDeepRewritePrompt,
+  computeDeepRewriteExecutionBudget,
   buildConsistencyCheckPrompt,
   parseConsistencyDeviations,
   buildEditorialSuggestionsPrompt,
@@ -67,15 +68,26 @@ import {
   spliceScopeResultIntoFullText,
   loadPolishTasks,
   savePolishTasks,
+  normalizePolishTaskRecord,
   computeTaskStatusLabel,
   deriveTitleFromText,
   stripThinkBlocks,
 } from '../utils/articlePolishEngine';
+import {
+  WorkbenchDraftRecord,
+  PolishDraftPayload,
+  saveWorkbenchDraft,
+  buildDraftPreview,
+  deriveDraftTitle,
+} from '../utils/workbenchDrafts';
 
 interface ArticlePolishProps {
   isActive: boolean;
   onSendToImitate: (content: string, title: string) => void;
   onUnsavedStateChange?: (hasUnsaved: boolean) => void;
+  draftToRestore?: WorkbenchDraftRecord | null;
+  draftUpdatedReq?: { note?: string; model?: string; targetChars?: number } | null;
+  onDraftRestored?: () => void;
 }
 
 const PERSPECTIVE_OPTIONS = [
@@ -91,10 +103,28 @@ const ENDING_OPTIONS = [
   '按补充要求调整结局呈现',
 ];
 
+const DEEP_CONSTRAINT_PRESETS = [
+  '保持克制白描，严禁浮夸煽情和AI套话',
+  '字数严格贴近原稿，绝不注水扩写',
+  '减少内心独白，用具体动作和对话推进剧情',
+  '加快叙事节奏，强化中段冲突与反转张力',
+  '保留人物对话原味，去掉说教和强行升华',
+];
+
+const EDITORIAL_NOTE_PRESETS = [
+  '强化开篇钩子与前几段代入感',
+  '放大中段冲突张力与反转看点',
+  '让人物对话更有潜台词与交锋火花',
+  '把平淡概括改成有画面感的具体场景',
+];
+
 const ArticlePolish: React.FC<ArticlePolishProps> = ({
   isActive,
   onSendToImitate,
   onUnsavedStateChange,
+  draftToRestore,
+  draftUpdatedReq,
+  onDraftRestored,
 }) => {
   const [userId, setUserId] = useState<string | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
@@ -107,6 +137,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
 
   // Common Workspace Controls
   const [showModelConfig, setShowModelConfig] = useState(false);
+  const [showLightTargetConfig, setShowLightTargetConfig] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [saveCreationModal, setSaveCreationModal] = useState<{ open: boolean; content: string }>({
@@ -180,14 +211,179 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
     };
   }, []);
 
-  // Abort active requests and clear timers on unmount
+  const buildRequirementsSummary = useCallback((task: PolishTaskRecord, mode: PolishMode): string => {
+    if (mode === 'light') {
+      const focusNames = LIGHT_POLISH_FOCUSES
+        .filter((f) => task.light.focuses.includes(f.id))
+        .map((f) => f.label)
+        .join('、');
+      const parts = [focusNames ? `侧重点：${focusNames}` : ''];
+      if (task.light.extraNotes?.trim()) parts.push(`补充要求：${task.light.extraNotes.trim()}`);
+      if (task.light.targetChars > 0) parts.push(`目标字数：${task.light.targetChars} 字`);
+      return parts.filter(Boolean).join('；');
+    }
+    if (mode === 'deep') {
+      const parts = [
+        task.deep.preserveStyle !== false ? '保持原稿文风' : '按要求重塑文风',
+        task.deep.perspective,
+        task.deep.endingPreference,
+      ];
+      if (task.deep.customConstraints?.trim()) parts.push(`方向与约束：${task.deep.customConstraints.trim()}`);
+      if (task.deep.settingChanges?.trim()) parts.push(`设定调整：${task.deep.settingChanges.trim()}`);
+      if (task.deep.plotChanges?.trim()) parts.push(`剧情发展：${task.deep.plotChanges.trim()}`);
+      if (task.deep.styleNotes?.trim()) parts.push(`写法要求：${task.deep.styleNotes.trim()}`);
+      if (task.deep.targetChars > 0) parts.push(`目标字数：${task.deep.targetChars} 字`);
+      return parts.filter(Boolean).join('；');
+    }
+    const edFocusNames = EDITORIAL_FOCUSES
+      .filter((f) => task.editorial.focuses.includes(f.id))
+      .map((f) => f.label)
+      .join('、');
+    const edParts = [edFocusNames ? `优化方向：${edFocusNames}` : ''];
+    if (task.editorial.extraNotes?.trim()) edParts.push(`自定义要求：${task.editorial.extraNotes.trim()}`);
+    return edParts.filter(Boolean).join('；') || '内容与行文优化建议';
+  }, []);
+
+  const hasTaskMeaningfulContent = useCallback((task: PolishTaskRecord | null): boolean => {
+    if (!task) return false;
+    return Boolean(
+      task.originalText.trim() ||
+      task.light.prosePreview.trim() ||
+      task.deep.rewrittenText.trim() ||
+      task.deep.skeleton !== null ||
+      task.editorial.suggestions.length > 0 ||
+      task.versions.length > 0
+    );
+  }, []);
+
+  const savePolishTaskToWorkbenchDrafts = useCallback(
+    (task: PolishTaskRecord, mode: PolishMode, saveType: 'manual' | 'auto', statusOverride?: string) => {
+      if (!hasTaskMeaningfulContent(task)) return null;
+      const outputText =
+        mode === 'deep'
+          ? task.deep.rewrittenText
+          : mode === 'light'
+            ? task.light.prosePreview
+            : task.editorial.workingText || task.editorial.rawOutput;
+      const payload: PolishDraftPayload = {
+        task,
+        activeMode: mode,
+      };
+      return saveWorkbenchDraft(userId, {
+        autoSlotKey: saveType === 'auto' ? `auto-polish-${task.id}` : undefined,
+        category: 'polish',
+        saveType,
+        title:
+          task.title && task.title !== '未命名稿件'
+            ? `${task.title} · ${getPolishModeLabel(mode)}`
+            : `${deriveDraftTitle(task.originalText || outputText, '未命名润色')} · ${getPolishModeLabel(mode)}`,
+        model: task.model,
+        requirementsNote: buildRequirementsSummary(task, mode),
+        outputPreview: buildDraftPreview(outputText || task.originalText),
+        outputCharCount: countContentChars(outputText),
+        sourceCharCount: countContentChars(task.originalText),
+        statusLabel: statusOverride || (saveType === 'auto' ? '退出自动暂存' : '手动保存草稿'),
+        payload,
+      });
+    },
+    [userId, hasTaskMeaningfulContent, buildRequirementsSummary]
+  );
+
+  const latestDraftStateRef = useRef<{ task: PolishTaskRecord | null; mode: PolishMode }>({
+    task: activeTask,
+    mode: activeMode,
+  });
+  latestDraftStateRef.current = { task: activeTask, mode: activeMode };
+
+  const wasActiveRef = useRef(isActive);
   useEffect(() => {
+    if (wasActiveRef.current && !isActive) {
+      const { task, mode } = latestDraftStateRef.current;
+      if (task && hasTaskMeaningfulContent(task)) {
+        savePolishTaskToWorkbenchDrafts(task, mode, 'auto', '切换离开自动暂存');
+      }
+    }
+    wasActiveRef.current = isActive;
+  }, [isActive, hasTaskMeaningfulContent, savePolishTaskToWorkbenchDrafts]);
+
+  // Auto-save on pagehide/beforeunload and unmount, plus abort active requests
+  useEffect(() => {
+    const handleUnloadSave = () => {
+      const { task, mode } = latestDraftStateRef.current;
+      if (task && hasTaskMeaningfulContent(task)) {
+        savePolishTaskToWorkbenchDrafts(task, mode, 'auto', '异常/退出自动暂存');
+      }
+    };
+    window.addEventListener('pagehide', handleUnloadSave);
     return () => {
+      window.removeEventListener('pagehide', handleUnloadSave);
+      handleUnloadSave();
       abortControllerRef.current?.abort();
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
-  }, []);
+  }, [hasTaskMeaningfulContent, savePolishTaskToWorkbenchDrafts]);
+
+  // Restore draft from Personal Center ("我的草稿")
+  useEffect(() => {
+    if (!draftToRestore || draftToRestore.category !== 'polish') return;
+    const payload = draftToRestore.payload as PolishDraftPayload;
+    if (!payload?.task) {
+      onDraftRestored?.();
+      return;
+    }
+    let restored = normalizePolishTaskRecord(payload.task);
+    let nextMode: PolishMode = payload.activeMode || restored.lastMode || 'light';
+
+    if (draftUpdatedReq) {
+      if (draftUpdatedReq.model) restored.model = draftUpdatedReq.model;
+      if (typeof draftUpdatedReq.targetChars === 'number') {
+        if (nextMode === 'light') {
+          restored.light = { ...restored.light, targetChars: draftUpdatedReq.targetChars };
+        } else {
+          restored.deep = { ...restored.deep, targetChars: draftUpdatedReq.targetChars };
+        }
+      }
+      if (draftUpdatedReq.note?.trim()) {
+        const note = draftUpdatedReq.note.trim();
+        if (nextMode === 'light') {
+          restored.light = { ...restored.light, extraNotes: note };
+        } else if (nextMode === 'deep') {
+          restored.deep = {
+            ...restored.deep,
+            customConstraints: note,
+            step: restored.deep.skeleton ? 'settings' : restored.deep.step,
+          };
+        } else {
+          restored.editorial = {
+            ...restored.editorial,
+            extraNotes: note,
+          };
+        }
+      }
+    }
+
+    // Ensure interrupted drafts can always be resumed
+    if (restored.deep.errorText && restored.deep.rewrittenText.trim()) {
+      restored.deep = { ...restored.deep, resumable: true };
+    }
+    if (restored.light.errorText && restored.light.prosePreview.trim()) {
+      restored.light = { ...restored.light, resumable: true };
+    }
+
+    setActiveTask(restored);
+    setActiveMode(nextMode);
+    setPageView('workspace');
+    setSelectedChangeId(null);
+    setActiveSuggestionId(null);
+    setMobilePane(restored.deep.rewrittenText || restored.light.prosePreview ? 'result' : 'original');
+    showToast(
+      draftUpdatedReq?.note
+        ? '已载入润色草稿与最新修改要求，可直接开始重新生成'
+        : `已恢复润色草稿「${restored.title}」`
+    );
+    onDraftRestored?.();
+  }, [draftToRestore, draftUpdatedReq, onDraftRestored, showToast]);
 
   // Track unsaved modifications for App navigation guard
   const hasUnsavedChanges = useMemo(() => {
@@ -203,16 +399,22 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
     onUnsavedStateChange?.(hasUnsavedChanges);
   }, [hasUnsavedChanges, onUnsavedStateChange]);
 
-  // Warn browser tab close if unsaved
+  // Warn browser tab close if unsaved (and auto-save beforeunload)
   useEffect(() => {
-    if (!hasUnsavedChanges || !isActive) return;
+    if (!isActive) return;
     const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = '';
+      const { task, mode } = latestDraftStateRef.current;
+      if (task && hasTaskMeaningfulContent(task)) {
+        savePolishTaskToWorkbenchDrafts(task, mode, 'auto', '关闭页面自动暂存');
+      }
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [hasUnsavedChanges, isActive]);
+  }, [hasUnsavedChanges, isActive, hasTaskMeaningfulContent, savePolishTaskToWorkbenchDrafts]);
 
   // Persist active task into recent tasks list whenever it meaningfully changes
   const persistTask = useCallback(
@@ -293,8 +495,9 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
   };
 
   const openExistingTask = (task: PolishTaskRecord) => {
-    setActiveTask(task);
-    setActiveMode(task.lastMode || 'light');
+    const normalized = normalizePolishTaskRecord(task);
+    setActiveTask(normalized);
+    setActiveMode(normalized.lastMode || 'light');
     setSelectedChangeId(null);
     setActiveSuggestionId(null);
     setPageView('workspace');
@@ -454,6 +657,20 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
     }
   };
 
+  // Manual Save Draft Handler
+  const handleManualSaveDraft = () => {
+    if (!activeTask || !hasTaskMeaningfulContent(activeTask)) {
+      showToast('请先输入原稿或生成内容后再保存草稿');
+      return;
+    }
+    const saved = savePolishTaskToWorkbenchDrafts(activeTask, activeMode, 'manual', '手动保存草稿');
+    if (saved) {
+      showToast('已保存草稿至「个人中心 - 我的草稿 - 润色」');
+    } else {
+      showToast('本地存储空间不足，请清理旧草稿后重试');
+    }
+  };
+
   // Stop Active Generation
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
@@ -461,26 +678,38 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
       abortControllerRef.current = null;
     }
     setIsGenerating(false);
-    setGeneratingStage('已暂停，原稿与已有内容均已保留');
+    setGeneratingStage('已暂停，原稿与已有内容均已保留（可继续生成）');
 
     if (activeMode === 'light') {
-      updateActiveTask((prev) => ({
-        ...prev,
-        light: {
-          ...prev.light,
-          statusText: '已手动停止，保留当前草稿',
-          resumable: Boolean(prev.light.rawOutput.trim()),
-        },
-      }));
+      updateActiveTask((prev) => {
+        const next: PolishTaskRecord = {
+          ...prev,
+          light: {
+            ...prev.light,
+            statusText: prev.light.prosePreview.trim()
+              ? `已手动停止，已保留 ${countContentChars(prev.light.prosePreview)} 字草稿`
+              : '已手动停止',
+            resumable: Boolean(prev.light.rawOutput.trim() || prev.light.prosePreview.trim()),
+          },
+        };
+        savePolishTaskToWorkbenchDrafts(next, 'light', 'auto', '生成暂停自动保留');
+        return next;
+      });
     } else if (activeMode === 'deep') {
-      updateActiveTask((prev) => ({
-        ...prev,
-        deep: {
-          ...prev.deep,
-          statusText: '已手动停止，保留当前草稿',
-          resumable: Boolean(prev.deep.rewrittenText.trim()),
-        },
-      }));
+      updateActiveTask((prev) => {
+        const next: PolishTaskRecord = {
+          ...prev,
+          deep: {
+            ...prev.deep,
+            statusText: prev.deep.rewrittenText.trim()
+              ? `已手动停止，已保留 ${countContentChars(prev.deep.rewrittenText)} 字草稿`
+              : '已手动停止',
+            resumable: Boolean(prev.deep.rewrittenText.trim()),
+          },
+        };
+        savePolishTaskToWorkbenchDrafts(next, 'deep', 'auto', '生成暂停自动保留');
+        return next;
+      });
     } else if (activeMode === 'editorial') {
       updateActiveTask((prev) => ({
         ...prev,
@@ -513,10 +742,17 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
       const sourceText = isContinue ? activeTask.light.sourceSnapshot || scopeInfo.text : scopeInfo.text;
       const scopeStart = isContinue ? activeTask.light.scopeOffset : scopeInfo.start;
       const scopeEnd = isContinue ? activeTask.light.scopeEndOffset : scopeInfo.end;
+      const targetChars = activeTask.light.targetChars > 0 ? activeTask.light.targetChars : undefined;
 
-      const prompt = isContinue && lastLightPromptRef.current
-        ? lastLightPromptRef.current.prompt
-        : buildLightPolishPrompt({ text: sourceText, focuses: activeTask.light.focuses });
+      const prompt =
+        isContinue && lastLightPromptRef.current && lastLightPromptRef.current.model === selectedModel
+          ? lastLightPromptRef.current.prompt
+          : buildLightPolishPrompt({
+              text: sourceText,
+              focuses: activeTask.light.focuses,
+              extraNotes: activeTask.light.extraNotes,
+              targetChars,
+            });
 
       lastLightPromptRef.current = {
         prompt,
@@ -528,11 +764,11 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setIsGenerating(true);
-      setGeneratingStage('正在分析原稿');
-      setGeneratingChars(0);
+      setGeneratingStage(isContinue ? '正在接续轻度润色' : '正在分析原稿');
+      setGeneratingChars(isContinue ? countContentChars(activeTask.light.prosePreview) : 0);
       setSelectedChangeId(null);
 
-      let rawAcc = isContinue ? activeTask.light.rawOutput : '';
+      let rawAcc = isContinue ? activeTask.light.rawOutput || activeTask.light.prosePreview : '';
       let actualModelUsed = selectedModel;
 
       updateActiveTask((prev) => ({
@@ -545,7 +781,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
           rawOutput: rawAcc,
           prosePreview: splitLightPolishOutput(rawAcc).prose,
           changes: isContinue ? prev.light.changes : [],
-          statusText: '正在分析原稿',
+          statusText: isContinue ? '正在接续润色…' : '正在分析原稿',
           errorText: '',
           errorCategory: undefined,
           resumable: false,
@@ -558,6 +794,8 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
           temperature: activeTask.temperature,
           topP: activeTask.topP,
           maxOutputTokens: 32768,
+          targetChars,
+          stageControl: Boolean(targetChars),
           initialText: rawAcc || undefined,
           autoRecover: true,
           enforceTargetLength: false,
@@ -620,27 +858,30 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
           const partialChanges = parsedPartial.prose
             ? buildLightChanges(sourceText, parsedPartial.prose, parsedPartial.notes)
             : [];
-          const canContinue =
-            Boolean(rawAcc.trim()) &&
-            (!(e instanceof GenerationInterrupted) || e.recoverable !== false);
+          // Always allow resuming whenever partial draft text exists!
+          const canContinue = Boolean(parsedPartial.prose.trim() || rawAcc.trim());
 
-          updateActiveTask((prev) => ({
-            ...prev,
-            light: {
-              ...prev.light,
-              rawOutput: rawAcc,
-              prosePreview: parsedPartial.prose,
-              changes: partialChanges,
-              modelUsed: actualModelUsed,
-              statusText: parsedPartial.prose
-                ? `润色未完成（已保留 ${countContentChars(parsedPartial.prose)} 字草稿）`
-                : '润色未能完成',
-              errorText: `${classified.title}：${classified.detail}`,
-              errorCategory: classified.category,
-              resumable: canContinue,
-              hasUnsavedResult: Boolean(parsedPartial.prose),
-            },
-          }));
+          updateActiveTask((prev) => {
+            const next: PolishTaskRecord = {
+              ...prev,
+              light: {
+                ...prev.light,
+                rawOutput: rawAcc,
+                prosePreview: parsedPartial.prose,
+                changes: partialChanges,
+                modelUsed: actualModelUsed,
+                statusText: parsedPartial.prose
+                  ? `润色未完成（已保留 ${countContentChars(parsedPartial.prose)} 字草稿，可继续生成）`
+                  : '润色未能完成',
+                errorText: `${classified.title}：${classified.detail}`,
+                errorCategory: classified.category,
+                resumable: canContinue,
+                hasUnsavedResult: Boolean(parsedPartial.prose),
+              },
+            };
+            savePolishTaskToWorkbenchDrafts(next, 'light', 'auto', '生成中断自动保留');
+            return next;
+          });
         }
       } finally {
         setIsGenerating(false);
@@ -792,22 +1033,37 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
 
     const executeRewrite = async () => {
       const selectedModel = normalizeClientModel(activeTask.model);
-      const targetChars = activeTask.deep.targetChars > 0 ? activeTask.deep.targetChars : undefined;
+      const rewriteSource = isContinue && activeTask.deep.sourceSnapshot ? activeTask.deep.sourceSnapshot : scopeInfo.text;
+      const rewriteScopeStart = isContinue && typeof activeTask.deep.scopeOffset === 'number' ? activeTask.deep.scopeOffset : scopeInfo.start;
+      const rewriteScopeEnd = isContinue && typeof activeTask.deep.scopeEndOffset === 'number' ? activeTask.deep.scopeEndOffset : scopeInfo.end;
+
+      const rewriteSourceChars = countContentChars(rewriteSource);
+      const rewriteBudget = computeDeepRewriteExecutionBudget({
+        sourceChars: rewriteSourceChars,
+        targetChars: activeTask.deep.targetChars,
+        customConstraints: activeTask.deep.customConstraints,
+      });
+      const displayTargetChars = rewriteBudget.explicitTarget ? rewriteBudget.effectiveTargetChars : undefined;
 
       const prompt =
-        isContinue && lastDeepPromptRef.current
+        isContinue && lastDeepPromptRef.current && lastDeepPromptRef.current.model === selectedModel
           ? lastDeepPromptRef.current.prompt
           : buildDeepRewritePrompt({
-              sourceText: scopeInfo.text,
+              sourceText: rewriteSource,
               skeleton: activeTask.deep.skeleton!,
               perspective: activeTask.deep.perspective,
               endingPreference: activeTask.deep.endingPreference,
+              preserveStyle: activeTask.deep.preserveStyle,
+              customConstraints: activeTask.deep.customConstraints,
+              settingChanges: activeTask.deep.settingChanges,
+              plotChanges: activeTask.deep.plotChanges,
               styleNotes: activeTask.deep.styleNotes,
+              targetChars: activeTask.deep.targetChars > 0 ? activeTask.deep.targetChars : undefined,
             });
 
       lastDeepPromptRef.current = {
         prompt,
-        targetChars,
+        targetChars: rewriteBudget.effectiveTargetChars,
         model: selectedModel,
         temperature: activeTask.temperature,
         topP: activeTask.topP,
@@ -816,15 +1072,11 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setIsGenerating(true);
-      setGeneratingStage('正在重写');
+      setGeneratingStage(isContinue ? '正在接续同一篇重写正文' : '正在按方向与控字约束重写');
       setGeneratingChars(isContinue ? countContentChars(activeTask.deep.rewrittenText) : 0);
 
       let rewrittenAcc = isContinue ? activeTask.deep.rewrittenText : '';
       let actualModelUsed = selectedModel;
-
-      const rewriteSource = isContinue && activeTask.deep.sourceSnapshot ? activeTask.deep.sourceSnapshot : scopeInfo.text;
-      const rewriteScopeStart = isContinue && typeof activeTask.deep.scopeOffset === 'number' ? activeTask.deep.scopeOffset : scopeInfo.start;
-      const rewriteScopeEnd = isContinue && typeof activeTask.deep.scopeEndOffset === 'number' ? activeTask.deep.scopeEndOffset : scopeInfo.end;
 
       updateActiveTask((prev) => ({
         ...prev,
@@ -837,7 +1089,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
           rewrittenText: rewrittenAcc,
           statusText: rewrittenAcc
             ? `正在接续重写 · 已生成 ${countContentChars(rewrittenAcc)} 字`
-            : '正在重写',
+            : '正在按方向与控字约束重写',
           errorText: '',
           errorCategory: undefined,
           resumable: false,
@@ -854,9 +1106,9 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
           model: selectedModel,
           temperature: activeTask.temperature,
           topP: activeTask.topP,
-          maxOutputTokens: 32768,
-          targetChars,
-          stageControl: Boolean(targetChars),
+          maxOutputTokens: rewriteBudget.maxOutputTokens,
+          targetChars: rewriteBudget.effectiveTargetChars,
+          stageControl: rewriteBudget.useStageControl,
           enforceTargetLength: false,
           autoRecover: true,
           initialText: rewrittenAcc || undefined,
@@ -881,7 +1133,11 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
               ...prev.deep,
               rewrittenText: rewrittenAcc,
               modelUsed: actualModelUsed,
-              statusText: `正在重写 · 已生成 ${chars} 字`,
+              statusText: `正在重写 · 已生成 ${chars} 字${
+                displayTargetChars
+                  ? ` / 目标 ${displayTargetChars} 字`
+                  : `（贴近原稿 ${rewriteBudget.minBound}～${rewriteBudget.maxBound} 字）`
+              }`,
             },
           }));
         }
@@ -896,7 +1152,9 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
               step: 'result',
               rewrittenText: finalClean,
               modelUsed: actualModelUsed,
-              statusText: `已完成 · 实际 ${actual} 字`,
+              statusText: `已完成 · 实际 ${actual} 字${
+                displayTargetChars ? ` / 目标 ${displayTargetChars} 字` : `（原稿 ${rewriteSourceChars} 字）`
+              }`,
               errorText: '',
               resumable: false,
               hasUnsavedResult: true,
@@ -907,26 +1165,29 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
         if (!controller.signal.aborted && e?.message !== 'Aborted') {
           const classified = classifyPolishError(e?.message || String(e));
           const partialClean = stripThinkBlocks(rewrittenAcc);
-          const canContinue =
-            Boolean(partialClean.trim()) &&
-            (!(e instanceof GenerationInterrupted) || e.recoverable !== false);
+          // Match ImitationDirections behavior: any partial prose on interruption is resumable!
+          const canContinue = Boolean(partialClean.trim());
 
-          updateActiveTask((prev) => ({
-            ...prev,
-            deep: {
-              ...prev.deep,
-              step: 'result',
-              rewrittenText: partialClean,
-              modelUsed: actualModelUsed,
-              statusText: partialClean
-                ? `生成中断 · 已保留 ${countContentChars(partialClean)} 字草稿`
-                : '重写未完成',
-              errorText: `${classified.title}：${classified.detail}`,
-              errorCategory: classified.category,
-              resumable: canContinue,
-              hasUnsavedResult: Boolean(partialClean.trim()),
-            },
-          }));
+          updateActiveTask((prev) => {
+            const next: PolishTaskRecord = {
+              ...prev,
+              deep: {
+                ...prev.deep,
+                step: 'result',
+                rewrittenText: partialClean,
+                modelUsed: actualModelUsed,
+                statusText: partialClean
+                  ? `生成中断 · 已保留 ${countContentChars(partialClean)} 字草稿（可继续生成）`
+                  : '重写未完成',
+                errorText: `${classified.title}：${classified.detail}`,
+                errorCategory: classified.category,
+                resumable: canContinue,
+                hasUnsavedResult: Boolean(partialClean.trim()),
+              },
+            };
+            savePolishTaskToWorkbenchDrafts(next, 'deep', 'auto', '重写中断自动保留');
+            return next;
+          });
         }
       } finally {
         setIsGenerating(false);
@@ -1062,10 +1323,11 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
         const prompt = buildEditorialSuggestionsPrompt({
           text: sourceText,
           focuses: activeTask.editorial.focuses,
+          extraNotes: activeTask.editorial.extraNotes,
         });
         const stream = generateTextStream(prompt, {
           model: selectedModel,
-          temperature: Math.min(0.4, activeTask.temperature),
+          temperature: Math.min(0.5, activeTask.temperature),
           topP: activeTask.topP,
           maxOutputTokens: 16384,
           autoRecover: false,
@@ -1148,6 +1410,24 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
     updateActiveTask((prev) => {
       const nextList = prev.editorial.suggestions.map((s) =>
         s.id === id ? { ...s, status } : s
+      );
+      const rebuilt = rebuildEditorialState(prev.editorial.sourceSnapshot, nextList);
+      return {
+        ...prev,
+        editorial: {
+          ...prev.editorial,
+          suggestions: rebuilt.suggestions,
+          workingText: rebuilt.workingText,
+          hasUnsavedResult: true,
+        },
+      };
+    });
+  };
+
+  const updateSuggestionText = (id: string, nextSuggestion: string) => {
+    updateActiveTask((prev) => {
+      const nextList = prev.editorial.suggestions.map((s) =>
+        s.id === id ? { ...s, suggestion: nextSuggestion } : s
       );
       const rebuilt = rebuildEditorialState(prev.editorial.sourceSnapshot, nextList);
       return {
@@ -1603,10 +1883,10 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                 <div className="space-y-2.5 pt-2 border-t border-gray-100 dark:border-gray-800 text-sm">
                   <div>
                     <span className="text-xs font-semibold text-gray-400">适用场景：</span>
-                    <span className="text-gray-700 dark:text-gray-300 font-medium">故事有吸引力，但表达需要整体重做</span>
+                    <span className="text-gray-700 dark:text-gray-300 font-medium">故事底子好，想按指定方向克制重做</span>
                   </div>
                   <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                    先确认故事骨架、锁定重要细节、自选模型与写法。再按确认后的骨架重塑全文语言与节奏。
+                    先确认并锁定骨架，再自由输入改写方向与约束目标；严格去浮夸、严控篇幅，不把原稿洗成注水套话。
                   </p>
                 </div>
               </div>
@@ -1645,7 +1925,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                   <div>
                     <h2 className="text-xl font-bold text-gray-900 dark:text-white">编辑建议</h2>
                     <p className="text-sm font-semibold text-amber-600 dark:text-amber-400 mt-1">
-                      作者决定 · 逐条修改
+                      内容增彩 · 逐条添改
                     </p>
                   </div>
                   <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
@@ -1656,10 +1936,10 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                 <div className="space-y-2.5 pt-2 border-t border-gray-100 dark:border-gray-800 text-sm">
                   <div>
                     <span className="text-xs font-semibold text-gray-400">适用场景：</span>
-                    <span className="text-gray-700 dark:text-gray-300 font-medium">自己的稿件精修与复盘</span>
+                    <span className="text-gray-700 dark:text-gray-300 font-medium">提升精彩度与行文表现力（区别于审稿查错）</span>
                   </div>
                   <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                    问题定位到原文、解释修改理由、逐条采纳或保留。点击建议自动滚屏高亮，不遗漏前后衔接。
+                    聚焦开篇钩子、冲突张力、人物对话火花与场景画面感，给出可落地的添改建议，支持微调后逐条采纳或保留。
                   </p>
                 </div>
               </div>
@@ -1859,6 +2139,15 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
               }`}
             >
               <AdjustmentsHorizontal className="w-4 h-4" /> 参数
+            </button>
+
+            <button
+              type="button"
+              onClick={handleManualSaveDraft}
+              className="px-3 py-2 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-900/20 text-xs font-semibold text-sky-700 dark:text-sky-300 hover:bg-sky-100 whitespace-nowrap shrink-0 flex items-center gap-1"
+              title="将当前原稿、设置与已生成内容保存至个人中心「我的草稿」"
+            >
+              <FloppyDisk className="w-3.5 h-3.5" /> 存为草稿
             </button>
 
             <button
@@ -2283,7 +2572,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                       </button>
                     ) : (
                       <>
-                        {activeTask.light.resumable && (
+                        {(activeTask.light.resumable || (Boolean(activeTask.light.errorText) && Boolean(activeTask.light.prosePreview.trim()))) && (
                           <button
                             type="button"
                             onClick={() => void runLightPolish(true)}
@@ -2352,29 +2641,110 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                   })}
                 </div>
 
+                {/* Light Polish Extra Requirements & Optional Target Length */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label
+                      htmlFor="light-extra-notes"
+                      className="text-xs font-semibold text-gray-700 dark:text-gray-300"
+                    >
+                      补充润色要求（可选）
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowLightTargetConfig((v) => !v)}
+                      className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
+                        activeTask.light.targetChars > 0 || showLightTargetConfig
+                          ? 'bg-sky-50 dark:bg-sky-900/30 border-sky-300 dark:border-sky-800 text-sky-700 dark:text-sky-300'
+                          : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 hover:text-sky-600'
+                      }`}
+                    >
+                      {activeTask.light.targetChars > 0
+                        ? `字数约束：约 ${activeTask.light.targetChars} 字`
+                        : '设置字数约束（默认紧贴原稿）'}
+                    </button>
+                  </div>
+                  <textarea
+                    id="light-extra-notes"
+                    value={activeTask.light.extraNotes}
+                    onChange={(e) =>
+                      updateActiveTask((prev) => ({
+                        ...prev,
+                        light: { ...prev.light, extraNotes: e.target.value },
+                      }))
+                    }
+                    rows={2}
+                    placeholder="例如：保留角色毒舌与年代感口吻、精简多余心理总结、把对白里的“说道”改得更利落、将结尾节奏再压紧一些..."
+                    className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-sky-500 outline-none resize-y"
+                  />
+                  {showLightTargetConfig && (
+                    <div className="p-3 rounded-xl bg-sky-50/50 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900/40">
+                      <TargetLength
+                        value={activeTask.light.targetChars}
+                        onChange={(val) =>
+                          updateActiveTask((prev) => ({
+                            ...prev,
+                            light: { ...prev.light, targetChars: val },
+                          }))
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+
                 {/* Status & Honest Error Banner */}
                 {(isGenerating || activeTask.light.statusText || activeTask.light.errorText) && (
                   <div className="space-y-2">
                     {(isGenerating || activeTask.light.statusText) && (
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-sky-50/80 dark:bg-sky-950/30 text-xs text-sky-800 dark:text-sky-300 tabular-nums">
-                        <span className="flex items-center gap-1.5 font-medium">
-                          {isGenerating && <ArrowPath className="w-3.5 h-3.5 animate-spin" />}
-                          {isGenerating ? generatingStage : activeTask.light.statusText}
-                        </span>
-                        {activeTask.light.modelUsed && (
-                          <span className="text-sky-700/80 dark:text-sky-400/80">
-                            使用模型：{activeTask.light.modelUsed}
+                      <div className="px-3 py-2 rounded-lg bg-sky-50/80 dark:bg-sky-950/30 text-xs text-sky-800 dark:text-sky-300 tabular-nums space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            {isGenerating && <ArrowPath className="w-3.5 h-3.5 animate-spin" />}
+                            {isGenerating ? generatingStage : activeTask.light.statusText}
                           </span>
+                          {activeTask.light.modelUsed && (
+                            <span className="text-sky-700/80 dark:text-sky-400/80">
+                              使用模型：{activeTask.light.modelUsed}
+                            </span>
+                          )}
+                        </div>
+                        {activeTask.light.targetChars > 0 && (
+                          <progress
+                            aria-label="轻度润色字数进度"
+                            className="w-full h-1"
+                            max={activeTask.light.targetChars}
+                            value={Math.min(countContentChars(activeTask.light.prosePreview), activeTask.light.targetChars)}
+                          />
                         )}
                       </div>
                     )}
                     {activeTask.light.errorText && (
                       <div
                         role="alert"
-                        className="px-3 py-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2"
+                        className="px-3 py-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex flex-wrap items-center justify-between gap-2"
                       >
-                        <ExclamationCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <span>{activeTask.light.errorText}</span>
+                        <div className="flex items-start gap-2">
+                          <ExclamationCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>{activeTask.light.errorText}</span>
+                        </div>
+                        {!isGenerating && (activeTask.light.resumable || activeTask.light.prosePreview.trim()) && (
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => void runLightPolish(true)}
+                              className="px-3 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold inline-flex items-center gap-1"
+                            >
+                              <Play className="w-3 h-3" /> 继续生成
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void runLightPolish(false)}
+                              className="px-3 py-1 rounded-lg border border-rose-300 dark:border-rose-700 bg-white dark:bg-gray-900 text-rose-700 dark:text-rose-300 text-xs font-semibold"
+                            >
+                              重新生成
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2631,6 +3001,13 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                     </button>
                     <button
                       type="button"
+                      onClick={handleManualSaveDraft}
+                      className="px-3.5 py-2 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 text-xs font-semibold hover:bg-sky-100 inline-flex items-center gap-1.5"
+                    >
+                      <FloppyDisk className="w-3.5 h-3.5" /> 存为草稿
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void handleSaveNewVersion(false)}
                       className="px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 active:scale-95 transition-all"
                     >
@@ -2719,27 +3096,67 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                 {(isGenerating || activeTask.deep.statusText || activeTask.deep.skeletonStatus || activeTask.deep.errorText) && (
                   <div className="space-y-2">
                     {(isGenerating || activeTask.deep.statusText || activeTask.deep.skeletonStatus) && (
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-purple-50/80 dark:bg-purple-950/30 text-xs text-purple-800 dark:text-purple-200 tabular-nums">
-                        <span className="flex items-center gap-1.5 font-medium">
-                          {isGenerating && <ArrowPath className="w-3.5 h-3.5 animate-spin" />}
-                          {isGenerating
-                            ? generatingStage
-                            : activeTask.deep.step === 'skeleton'
-                              ? activeTask.deep.skeletonStatus
-                              : activeTask.deep.statusText}
-                        </span>
-                        {activeTask.deep.modelUsed && (
-                          <span>使用模型：{activeTask.deep.modelUsed}</span>
+                      <div className="px-3 py-2 rounded-lg bg-purple-50/80 dark:bg-purple-950/30 text-xs text-purple-800 dark:text-purple-200 tabular-nums space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            {isGenerating && <ArrowPath className="w-3.5 h-3.5 animate-spin" />}
+                            {isGenerating
+                              ? generatingStage
+                              : activeTask.deep.step === 'skeleton'
+                                ? activeTask.deep.skeletonStatus
+                                : activeTask.deep.statusText}
+                          </span>
+                          <div className="flex items-center gap-3">
+                            {activeTask.deep.step === 'result' && (
+                              <span>
+                                已生成 {countContentChars(activeTask.deep.rewrittenText)} 字
+                                {activeTask.deep.targetChars > 0 ? ` / 目标 ${activeTask.deep.targetChars} 字` : ''}
+                              </span>
+                            )}
+                            {activeTask.deep.modelUsed && (
+                              <span>使用模型：{activeTask.deep.modelUsed}</span>
+                            )}
+                          </div>
+                        </div>
+                        {activeTask.deep.step === 'result' && activeTask.deep.targetChars > 0 && (
+                          <progress
+                            aria-label="深度重写字数进度"
+                            className="w-full h-1"
+                            max={activeTask.deep.targetChars}
+                            value={Math.min(countContentChars(activeTask.deep.rewrittenText), activeTask.deep.targetChars)}
+                          />
                         )}
                       </div>
                     )}
                     {activeTask.deep.errorText && (
                       <div
                         role="alert"
-                        className="px-3 py-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2"
+                        className="px-3 py-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex flex-wrap items-center justify-between gap-2"
                       >
-                        <ExclamationCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <span>{activeTask.deep.errorText}</span>
+                        <div className="flex items-start gap-2">
+                          <ExclamationCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>{activeTask.deep.errorText}</span>
+                        </div>
+                        {!isGenerating && activeTask.deep.step === 'result' && (
+                          <div className="flex items-center gap-2 shrink-0">
+                            {(activeTask.deep.resumable || activeTask.deep.rewrittenText.trim()) && (
+                              <button
+                                type="button"
+                                onClick={() => void runDeepRewrite(true)}
+                                className="px-3 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold inline-flex items-center gap-1"
+                              >
+                                <Play className="w-3 h-3" /> 继续生成
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void runDeepRewrite(false)}
+                              className="px-3 py-1 rounded-lg border border-rose-300 dark:border-rose-700 bg-white dark:bg-gray-900 text-rose-700 dark:text-rose-300 text-xs font-semibold"
+                            >
+                              重新生成
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2800,7 +3217,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                           点击右上角「锁定」可要求后续重写尽量严格遵循该条目；生成后支持复查是否偏离锁定项（锁定属于强约束引导，建议生成后对照核对）。
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                         {isGenerating ? (
                           <button
                             type="button"
@@ -2810,13 +3227,36 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                             <Stop className="w-3.5 h-3.5" /> 停止提取
                           </button>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => void runExtractSkeleton()}
-                            className="px-3.5 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50"
-                          >
-                            重新提取骨架
-                          </button>
+                          <>
+                            {activeTask.deep.skeleton && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateActiveTask((prev) => {
+                                    if (!prev.deep.skeleton) return prev;
+                                    const anyLocked = SKELETON_CARD_META.some((m) => prev.deep.skeleton![m.key].locked);
+                                    const updated = { ...prev.deep.skeleton };
+                                    for (const m of SKELETON_CARD_META) {
+                                      updated[m.key] = { ...updated[m.key], locked: !anyLocked };
+                                    }
+                                    return { ...prev, deep: { ...prev.deep, skeleton: updated } };
+                                  })
+                                }
+                                className="px-3.5 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50"
+                              >
+                                {SKELETON_CARD_META.some((m) => activeTask.deep.skeleton![m.key].locked)
+                                  ? '全部解锁编辑'
+                                  : '全部锁定保护'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void runExtractSkeleton()}
+                              className="px-3.5 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50"
+                            >
+                              重新提取骨架
+                            </button>
+                          </>
                         )}
                         {activeTask.deep.skeleton && !isGenerating && (
                           <button
@@ -2872,13 +3312,13 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                                   }
                                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1 border transition-colors ${
                                     card.locked
-                                      ? 'bg-purple-600 text-white border-purple-600'
+                                      ? 'bg-purple-600 text-white border-purple-600 hover:bg-purple-500'
                                       : 'bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-purple-300'
                                   }`}
                                 >
                                   {card.locked ? (
                                     <>
-                                      <LockClosed className="w-3.5 h-3.5" /> 已锁定
+                                      <LockClosed className="w-3.5 h-3.5" /> 已锁定 · 点击解锁
                                     </>
                                   ) : (
                                     <>
@@ -2889,7 +3329,9 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                               </div>
                               <textarea
                                 value={card.content}
-                                onChange={(e) =>
+                                readOnly={card.locked}
+                                onChange={(e) => {
+                                  if (card.locked) return;
                                   updateActiveTask((prev) => {
                                     if (!prev.deep.skeleton) return prev;
                                     const cur = prev.deep.skeleton[meta.key];
@@ -2903,12 +3345,21 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                                         },
                                       },
                                     };
-                                  })
-                                }
+                                  });
+                                }}
                                 placeholder={meta.placeholder}
                                 rows={4}
-                                className="w-full p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 leading-relaxed focus:ring-2 focus:ring-purple-500 outline-none resize-y"
+                                className={`w-full p-2.5 rounded-lg border text-xs leading-relaxed outline-none resize-y ${
+                                  card.locked
+                                    ? 'bg-purple-50/40 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800 text-gray-600 dark:text-gray-300 cursor-not-allowed'
+                                    : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-purple-500'
+                                }`}
                               />
+                              {card.locked && (
+                                <p className="text-[11px] text-purple-600 dark:text-purple-400">
+                                  已锁定保护；二次修改时点击右上角「已锁定 · 点击解锁」即可随时编辑。
+                                </p>
+                              )}
                             </div>
                           );
                         })}
@@ -2917,13 +3368,24 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                   </div>
                 )}
 
-                {/* Step 3: Rewrite Settings (Reusing TargetLength!) */}
-                {activeTask.deep.step === 'settings' && (
+                {/* Step 3: Rewrite Settings (Freeform Direction & Constraints + Anti-Melodrama + Word Control) */}
+                {activeTask.deep.step === 'settings' && (() => {
+                  const previewBudget = computeDeepRewriteExecutionBudget({
+                    sourceChars: scopeChars,
+                    targetChars: activeTask.deep.targetChars,
+                    customConstraints: activeTask.deep.customConstraints,
+                  });
+                  return (
                   <div className="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-5">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-base font-bold text-gray-900 dark:text-white">
-                        重写模型与写法设置
-                      </h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                          自由设定改写方向与约束目标
+                        </h3>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                          系统已默认内置「去浮夸、不堆砌套话、严控字数」规则，你可在下方自由输入自己的改写目标并直接生效。
+                        </p>
+                      </div>
                       <button
                         type="button"
                         onClick={() =>
@@ -2932,10 +3394,118 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                             deep: { ...prev.deep, step: 'skeleton' },
                           }))
                         }
-                        className="text-xs font-semibold text-purple-600 hover:underline"
+                        className="text-xs font-semibold text-purple-600 hover:underline whitespace-nowrap shrink-0"
                       >
                         返回修改骨架
                       </button>
+                    </div>
+
+                    {/* Freeform Direction & Constraints Box (Top Priority, Directly Passed to Model) */}
+                    <div className="p-4 rounded-xl bg-purple-50/70 dark:bg-purple-950/25 border border-purple-200 dark:border-purple-800/70 space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="text-xs font-bold text-purple-900 dark:text-purple-200">
+                          自由编辑：改写方向与约束目标（最高优先级，逐条生效）
+                        </label>
+                        {activeTask.deep.customConstraints.trim() && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateActiveTask((prev) => ({
+                                ...prev,
+                                deep: { ...prev.deep, customConstraints: '' },
+                              }))
+                            }
+                            className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline"
+                          >
+                            清空
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        value={activeTask.deep.customConstraints}
+                        onChange={(e) =>
+                          updateActiveTask((prev) => ({
+                            ...prev,
+                            deep: { ...prev.deep, customConstraints: e.target.value },
+                          }))
+                        }
+                        placeholder="自由输入你想要的改写方向、文风底线、必须保留或必须调整的约束目标。例如：&#10;1. 全文保持冷静克制的白描质感，不要浮夸煽情，不要AI套话&#10;2. 篇幅控制在 1800 字左右，绝不注水扩写&#10;3. 保留原稿人物关系，但把中段对峙戏改得更克制有张力"
+                        rows={4}
+                        className="w-full p-3 rounded-xl bg-white dark:bg-gray-900 border border-purple-200/90 dark:border-purple-800 text-sm text-gray-800 dark:text-gray-100 leading-relaxed focus:ring-2 focus:ring-purple-500 outline-none resize-y"
+                      />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">快捷填入约束：</span>
+                        {DEEP_CONSTRAINT_PRESETS.map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() =>
+                              updateActiveTask((prev) => {
+                                const cur = prev.deep.customConstraints.trim();
+                                if (cur.includes(preset)) return prev;
+                                return {
+                                  ...prev,
+                                  deep: {
+                                    ...prev.deep,
+                                    customConstraints: cur ? `${cur}\n- ${preset}` : `- ${preset}`,
+                                  },
+                                };
+                              })
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-white dark:bg-gray-900 border border-purple-200 dark:border-purple-800 text-[11px] text-purple-700 dark:text-purple-300 hover:bg-purple-100/70 dark:hover:bg-purple-900/40 transition-colors"
+                          >
+                            + {preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Preserve original style toggle */}
+                    <div className="p-3.5 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200/80 dark:border-gray-700/80 flex flex-wrap items-center justify-between gap-3">
+                      <div className="space-y-0.5">
+                        <div className="text-xs font-bold text-gray-900 dark:text-white">
+                          基础文风口径
+                        </div>
+                        <div className="text-[11px] text-gray-600 dark:text-gray-400">
+                          {activeTask.deep.preserveStyle !== false
+                            ? '保持原稿平实克制的语感、句式节奏与对话腔调，避免洗成浮夸腔'
+                            : '按上方自定义方向与补充要求重塑语言气质，仍严禁浮华堆砌'}
+                        </div>
+                      </div>
+                      <div className="flex bg-white dark:bg-gray-800 p-0.5 rounded-lg border border-purple-200 dark:border-purple-800 text-xs">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateActiveTask((prev) => ({
+                              ...prev,
+                              deep: { ...prev.deep, preserveStyle: true },
+                            }))
+                          }
+                          className={`px-3 py-1 rounded-md font-semibold transition-colors whitespace-nowrap ${
+                            activeTask.deep.preserveStyle !== false
+                              ? 'bg-purple-600 text-white'
+                              : 'text-gray-600 dark:text-gray-300'
+                          }`}
+                        >
+                          保持原稿文风
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateActiveTask((prev) => ({
+                              ...prev,
+                              deep: { ...prev.deep, preserveStyle: false },
+                            }))
+                          }
+                          className={`px-3 py-1 rounded-md font-semibold transition-colors whitespace-nowrap ${
+                            activeTask.deep.preserveStyle === false
+                              ? 'bg-purple-600 text-white'
+                              : 'text-gray-600 dark:text-gray-300'
+                          }`}
+                        >
+                          按要求改文风
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2972,9 +3542,47 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                       </div>
                     </div>
 
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">
+                          重新修改设定（可选）
+                        </label>
+                        <textarea
+                          value={activeTask.deep.settingChanges}
+                          onChange={(e) =>
+                            updateActiveTask((prev) => ({
+                              ...prev,
+                              deep: { ...prev.deep, settingChanges: e.target.value },
+                            }))
+                          }
+                          placeholder="可选：如“将男主身份从普通职员改为卧底刑警，背景改为九十年代南方港城”..."
+                          rows={2}
+                          className="w-full p-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-purple-500 outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">
+                          重新调整剧情发展（可选）
+                        </label>
+                        <textarea
+                          value={activeTask.deep.plotChanges}
+                          onChange={(e) =>
+                            updateActiveTask((prev) => ({
+                              ...prev,
+                              deep: { ...prev.deep, plotChanges: e.target.value },
+                            }))
+                          }
+                          placeholder="可选：如“中段让女主提前识破谎言，反客为主拿走账本，结尾转为独自远走”..."
+                          rows={2}
+                          className="w-full p-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-purple-500 outline-none"
+                        />
+                      </div>
+                    </div>
+
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300">
-                        希望的写法与补充要求
+                        补充写法细节（可选）
                       </label>
                       <textarea
                         value={activeTask.deep.styleNotes}
@@ -2984,13 +3592,13 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                             deep: { ...prev.deep, styleNotes: e.target.value },
                           }))
                         }
-                        placeholder="例如：加强冷峻压抑的氛围对比、减少直接心理独白、改为多用动作和对话推进冲突..."
-                        rows={4}
-                        className="w-full p-3 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-purple-500 outline-none"
+                        placeholder="例如：多用短句、对话更生活化、保持留白感..."
+                        rows={2}
+                        className="w-full p-2.5 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-purple-500 outline-none"
                       />
                     </div>
 
-                    {/* Reuse Site's Unified TargetLength Component */}
+                    {/* Reuse Site's Unified TargetLength Component with Live Real Budget Readout */}
                     <div className="p-4 rounded-xl bg-sky-50/50 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900/40 space-y-2">
                       <TargetLength
                         value={activeTask.deep.targetChars}
@@ -3001,8 +3609,10 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                           }))
                         }
                       />
-                      <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                        说明：模型输出预算不直接等同中文字数，目标字数用于节奏分配参考，不保证模型必达精确字数；只要正常写完故事即判定「已完成」。
+                      <p className="text-[11px] text-sky-800 dark:text-sky-300 font-medium tabular-nums">
+                        {previewBudget.explicitTarget && previewBudget.effectiveTargetChars
+                          ? `实际控字生效：目标 ${previewBudget.effectiveTargetChars} 字（约束区间 ${previewBudget.minBound}～${previewBudget.maxBound} 字${activeTask.deep.targetChars === 0 ? '，已自动识别自上方自定义约束' : ''}）`
+                          : `实际控字生效：未单独设字数时，将严格贴近原稿篇幅（约 ${previewBudget.minBound}～${previewBudget.maxBound} 字）并限制输出预算，防止注水变长。`}
                       </p>
                     </div>
 
@@ -3011,13 +3621,14 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                         type="button"
                         onClick={() => void runDeepRewrite(false)}
                         disabled={isGenerating}
-                        className="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold shadow-sm transition-all active:scale-95 disabled:opacity-50"
+                        className="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold shadow-sm transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
                       >
-                        开始重写全文
+                        按以上方向与约束开始重写
                       </button>
                     </div>
                   </div>
-                )}
+                  );
+                })()}
 
                 {/* Step 4: Deep Rewrite Result, 3-Way Comparison & Consistency Check */}
                 {activeTask.deep.step === 'result' && (
@@ -3044,6 +3655,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                         ))}
                         <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums ml-2">
                           原稿 {scopeChars} 字 · 重写稿 {countContentChars(activeTask.deep.rewrittenText)} 字
+                          {activeTask.deep.targetChars > 0 ? ` / 目标 ${activeTask.deep.targetChars} 字` : ''}
                         </span>
                       </div>
 
@@ -3058,7 +3670,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                           </button>
                         ) : (
                           <>
-                            {activeTask.deep.resumable && (
+                            {(activeTask.deep.resumable || (Boolean(activeTask.deep.errorText) && Boolean(activeTask.deep.rewrittenText.trim()))) && (
                               <button
                                 type="button"
                                 onClick={() => void runDeepRewrite(true)}
@@ -3069,8 +3681,20 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                             )}
                             <button
                               type="button"
+                              onClick={() =>
+                                updateActiveTask((prev) => ({
+                                  ...prev,
+                                  deep: { ...prev.deep, step: 'settings' },
+                                }))
+                              }
+                              className="px-3.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 text-xs font-semibold flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <AdjustmentsHorizontal className="w-3.5 h-3.5" /> 调整方向与约束
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => void runDeepRewrite(false)}
-                              className="px-3.5 py-1.5 rounded-lg border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-50 text-xs font-semibold flex items-center gap-1"
+                              className="px-3.5 py-1.5 rounded-lg border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-50 text-xs font-semibold flex items-center gap-1 whitespace-nowrap"
                             >
                               <ArrowPath className="w-3.5 h-3.5" /> 重新生成
                             </button>
@@ -3078,7 +3702,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                               type="button"
                               disabled={isCheckingConsistency || !activeTask.deep.rewrittenText.trim()}
                               onClick={() => void runDeviationCheck()}
-                              className="px-3.5 py-1.5 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 hover:bg-sky-100 text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
+                              className="px-3.5 py-1.5 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 hover:bg-sky-100 text-xs font-semibold flex items-center gap-1 disabled:opacity-50 whitespace-nowrap"
                             >
                               <Eye className="w-3.5 h-3.5" />
                               {isCheckingConsistency ? '核对中…' : '检查锁定细节一致性'}
@@ -3115,28 +3739,132 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
 
                     {/* Compare Views */}
                     {deepCompareTab === 'skeleton' && activeTask.deep.skeleton ? (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {SKELETON_CARD_META.map((meta) => {
-                          const item = activeTask.deep.skeleton![meta.key];
-                          return (
-                            <div
-                              key={meta.key}
-                              className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 space-y-1.5"
+                      <div className="space-y-4">
+                        <div className="bg-white dark:bg-gray-900 rounded-xl border border-purple-200/80 dark:border-purple-900/50 p-3.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="text-gray-600 dark:text-gray-300">
+                            二次修改或保存后，可点击右上角「解锁」直接修改任意骨架卡片，然后重新重写。
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateActiveTask((prev) => {
+                                  if (!prev.deep.skeleton) return prev;
+                                  const updated = { ...prev.deep.skeleton };
+                                  for (const m of SKELETON_CARD_META) {
+                                    updated[m.key] = { ...updated[m.key], locked: false };
+                                  }
+                                  return { ...prev, deep: { ...prev.deep, skeleton: updated } };
+                                })
+                              }
+                              className="px-3 py-1.5 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 font-semibold hover:bg-purple-100"
                             >
-                              <div className="flex items-center justify-between text-xs font-bold text-gray-900 dark:text-white">
-                                <span>{meta.label}</span>
-                                {item.locked && (
-                                  <span className="text-purple-600 dark:text-purple-400 flex items-center gap-1">
-                                    <LockClosed className="w-3.5 h-3.5" /> 已锁定
-                                  </span>
+                              全部解锁编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateActiveTask((prev) => ({
+                                  ...prev,
+                                  deep: { ...prev.deep, step: 'settings' },
+                                }))
+                              }
+                              className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 font-semibold hover:bg-gray-50 dark:hover:bg-gray-800"
+                            >
+                              调整设定/写法/字数
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isGenerating}
+                              onClick={() => void runDeepRewrite(false)}
+                              className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold disabled:opacity-50"
+                            >
+                              按当前骨架重新重写
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {SKELETON_CARD_META.map((meta) => {
+                            const item = activeTask.deep.skeleton![meta.key];
+                            return (
+                              <div
+                                key={meta.key}
+                                className={`bg-white dark:bg-gray-900 rounded-xl border p-4 space-y-2 transition-colors ${
+                                  item.locked
+                                    ? 'border-purple-300 dark:border-purple-800 bg-purple-50/15 dark:bg-purple-950/10'
+                                    : 'border-gray-200 dark:border-gray-800'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 text-xs font-bold text-gray-900 dark:text-white">
+                                  <span>{meta.label}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateActiveTask((prev) => {
+                                        if (!prev.deep.skeleton) return prev;
+                                        const cur = prev.deep.skeleton[meta.key];
+                                        return {
+                                          ...prev,
+                                          deep: {
+                                            ...prev.deep,
+                                            skeleton: {
+                                              ...prev.deep.skeleton,
+                                              [meta.key]: { ...cur, locked: !cur.locked },
+                                            },
+                                          },
+                                        };
+                                      })
+                                    }
+                                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1 border transition-colors ${
+                                      item.locked
+                                        ? 'bg-purple-600 text-white border-purple-600 hover:bg-purple-500'
+                                        : 'bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-purple-300'
+                                    }`}
+                                  >
+                                    {item.locked ? (
+                                      <>
+                                        <LockClosed className="w-3.5 h-3.5" /> 已锁定 · 点击解锁
+                                      </>
+                                    ) : (
+                                      <>
+                                        <LockOpen className="w-3.5 h-3.5" /> 已解锁 · 点击锁定
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                                {item.locked ? (
+                                  <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                                    {item.content || '（未填写）'}
+                                  </p>
+                                ) : (
+                                  <textarea
+                                    value={item.content}
+                                    onChange={(e) =>
+                                      updateActiveTask((prev) => {
+                                        if (!prev.deep.skeleton) return prev;
+                                        const cur = prev.deep.skeleton[meta.key];
+                                        return {
+                                          ...prev,
+                                          deep: {
+                                            ...prev.deep,
+                                            skeleton: {
+                                              ...prev.deep.skeleton,
+                                              [meta.key]: { ...cur, content: e.target.value },
+                                            },
+                                          },
+                                        };
+                                      })
+                                    }
+                                    placeholder={meta.placeholder}
+                                    rows={4}
+                                    className="w-full p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 leading-relaxed focus:ring-2 focus:ring-purple-500 outline-none resize-y"
+                                  />
                                 )}
                               </div>
-                              <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-                                {item.content || '（未填写）'}
-                              </p>
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
+                        </div>
                       </div>
                     ) : deepCompareTab === 'split' ? (
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -3158,6 +3886,38 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                         <div className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed max-w-3xl">
                           {activeTask.deep.rewrittenText}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Prominent Centered Continue / Regenerate Row (matching CreativeGeneration UX) */}
+                    {!isGenerating && (activeTask.deep.rewrittenText.trim() || activeTask.deep.resumable) && deepCompareTab !== 'skeleton' && (
+                      <div className="pt-2 pb-1 flex flex-wrap justify-center gap-3">
+                        {(activeTask.deep.resumable || Boolean(activeTask.deep.errorText)) && activeTask.deep.rewrittenText.trim() ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void runDeepRewrite(true)}
+                              className="px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-full shadow-lg flex items-center gap-2 transition-all active:scale-95 text-sm"
+                            >
+                              <Play className="w-4 h-4" /> 继续生成
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void runDeepRewrite(false)}
+                              className="px-6 py-2.5 rounded-full border border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-300 font-bold text-sm hover:bg-purple-50 dark:hover:bg-purple-900/20 flex items-center gap-2"
+                            >
+                              <ArrowPath className="w-4 h-4" /> 重新生成
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void runDeepRewrite(false)}
+                            className="px-6 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-full shadow-sm flex items-center gap-2 transition-all active:scale-95 text-sm"
+                          >
+                            <ArrowPath className="w-4 h-4" /> 重新生成
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -3189,6 +3949,13 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                           <Copy className="w-3.5 h-3.5" /> 复制结果
                         </>
                       )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleManualSaveDraft}
+                      className="px-3.5 py-2 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 text-xs font-semibold hover:bg-sky-100 inline-flex items-center gap-1.5"
+                    >
+                      <FloppyDisk className="w-3.5 h-3.5" /> 存为草稿
                     </button>
                     <button
                       type="button"
@@ -3229,10 +3996,10 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-bold text-gray-900 dark:text-white">
-                      编辑建议 · 定位具体问题，逐条决定采纳或保留
+                      编辑建议 · 提升故事精彩度与行文表现力（区别于审稿查错）
                     </h2>
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      点击建议卡片即可在左侧定位高亮原文；采纳修改后将自动重算其余建议位置，避免错位。
+                      聚焦开篇钩子、冲突张力、人物火花与画面感的内容添改建议；点击卡片定位原文，支持微调建议稿后逐条采纳。
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -3240,7 +4007,7 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                       <button
                         type="button"
                         onClick={handleStopGeneration}
-                        className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-bold flex items-center gap-1.5"
+                        className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap"
                       >
                         <Stop className="w-4 h-4" /> 停止生成
                       </button>
@@ -3248,10 +4015,10 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                       <button
                         type="button"
                         onClick={() => void runEditorialSuggestions()}
-                        className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                        className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all whitespace-nowrap"
                       >
                         <ClipboardDocumentCheck className="w-4 h-4" />
-                        {activeTask.editorial.suggestions.length > 0 ? '重新获取建议' : '获取建议'}
+                        {activeTask.editorial.suggestions.length > 0 ? '重新获取建议' : '获取内容优化建议'}
                       </button>
                     )}
                   </div>
@@ -3291,6 +4058,51 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                       </button>
                     );
                   })}
+                </div>
+
+                {/* Custom Content Optimization Direction Input */}
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                      自定义优化方向与内容需求（可选）
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {EDITORIAL_NOTE_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() =>
+                            updateActiveTask((prev) => {
+                              const cur = (prev.editorial.extraNotes || '').trim();
+                              if (cur.includes(preset)) return prev;
+                              return {
+                                ...prev,
+                                editorial: {
+                                  ...prev.editorial,
+                                  extraNotes: cur ? `${cur}；${preset}` : preset,
+                                },
+                              };
+                            })
+                          }
+                          className="px-2 py-0.5 rounded-md bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 text-[11px] text-amber-800 dark:text-amber-300 hover:bg-amber-100/70 transition-colors"
+                        >
+                          + {preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <textarea
+                    value={activeTask.editorial.extraNotes || ''}
+                    onChange={(e) =>
+                      updateActiveTask((prev) => ({
+                        ...prev,
+                        editorial: { ...prev.editorial, extraNotes: e.target.value },
+                      }))
+                    }
+                    placeholder="例如：帮我看看开篇前三段够不够抓人、中段男女主对峙怎么加戏更有张力、哪些叙述太干瘪可以补充细节…"
+                    rows={2}
+                    className="w-full px-3 py-2 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-amber-400 outline-none resize-y"
+                  />
                 </div>
 
                 {(isGenerating || activeTask.editorial.statusText || activeTask.editorial.errorText) && (
@@ -3459,28 +4271,40 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
 
                             <div className="text-xs text-gray-700 dark:text-gray-300 space-y-1 leading-relaxed">
                               <p>
-                                <span className="font-semibold text-gray-900 dark:text-white">具体问题：</span>
+                                <span className="font-semibold text-gray-900 dark:text-white">可优化点：</span>
                                 {s.issue}
                               </p>
                               <p>
-                                <span className="font-semibold text-gray-900 dark:text-white">修改理由：</span>
+                                <span className="font-semibold text-gray-900 dark:text-white">精彩度提升理由：</span>
                                 {s.reason}
                               </p>
                             </div>
 
                             <div
-                              className={`p-2.5 rounded-lg text-xs border ${
+                              onClick={(e) => e.stopPropagation()}
+                              className={`p-2.5 rounded-lg text-xs border space-y-1.5 ${
                                 s.needsAuthorInput
                                   ? 'bg-amber-50/60 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200'
                                   : 'bg-sky-50/50 dark:bg-sky-950/20 border-sky-100 dark:border-sky-900/40 text-gray-800 dark:text-gray-200'
                               }`}
                             >
-                              <div className="font-semibold mb-0.5">
-                                {s.needsAuthorInput
-                                  ? '需作者补充信息（未直接写进正文）：'
-                                  : '建议改法：'}
+                              <div className="flex items-center justify-between gap-2 font-semibold">
+                                <span>
+                                  {s.needsAuthorInput
+                                    ? '加戏/补写思路（需作者确认，未自动写入正文）：'
+                                    : '建议添改稿（可直接微调后采纳）：'}
+                                </span>
                               </div>
-                              <div className="whitespace-pre-wrap">{s.suggestion}</div>
+                              {s.needsAuthorInput ? (
+                                <div className="whitespace-pre-wrap leading-relaxed">{s.suggestion}</div>
+                              ) : (
+                                <textarea
+                                  value={s.suggestion}
+                                  onChange={(e) => updateSuggestionText(s.id, e.target.value)}
+                                  rows={Math.max(2, Math.min(6, Math.ceil(s.suggestion.length / 42)))}
+                                  className="w-full p-2 rounded-lg bg-white/90 dark:bg-gray-900/80 border border-sky-200/70 dark:border-sky-800/70 text-xs text-gray-800 dark:text-gray-100 leading-relaxed focus:ring-2 focus:ring-sky-400 outline-none resize-y"
+                                />
+                              )}
                             </div>
                           </div>
                         );
@@ -3515,6 +4339,13 @@ const ArticlePolish: React.FC<ArticlePolishProps> = ({
                           <Copy className="w-3.5 h-3.5" /> 复制修订稿
                         </>
                       )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleManualSaveDraft}
+                      className="px-3.5 py-2 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 text-xs font-semibold hover:bg-sky-100 inline-flex items-center gap-1.5"
+                    >
+                      <FloppyDisk className="w-3.5 h-3.5" /> 存为草稿
                     </button>
                     <button
                       type="button"

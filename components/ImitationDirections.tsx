@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { generateTextStream, countContentChars, GenerationInterrupted, normalizeClientModel } from '../services/geminiService';
-import { ArrowPath, X, Pencil, Check, Plus, Trash, ArrowUturnLeft } from './Icon';
+import { ArrowPath, X, Pencil, Check, Plus, Trash, ArrowUturnLeft, FloppyDisk } from './Icon';
 import {
   Direction,
   parsePlansResponse,
@@ -9,15 +9,34 @@ import {
   isPlanModified,
   getModelLabel,
 } from '../utils/imitationPlan';
+import { ImitateDraftPayload } from '../utils/workbenchDrafts';
 
 type Draft = { text: string; status: string; error?: string; resumable?: boolean };
 
-export default function ImitationDirections({ prompt, options }: { prompt: string; options: any }) {
-  const [plans, setPlans] = useState<Direction[]>([]);
-  const [originalPlans, setOriginalPlans] = useState<Direction[]>([]);
-  const [selected, setSelected] = useState<number[]>([]);
-  const [active, setActive] = useState(0);
-  const [drafts, setDrafts] = useState<Record<number, Draft>>({});
+interface ImitationDirectionsProps {
+  prompt: string;
+  options: any;
+  initialDraftState?: ImitateDraftPayload['imitationState'] | null;
+  draftRestoreNote?: string;
+  onStateChange?: (state: ImitateDraftPayload['imitationState']) => void;
+  onSaveManualDraft?: () => void;
+  onAutoSaveDraft?: (reason: string, latestState?: ImitateDraftPayload['imitationState']) => void;
+}
+
+export default function ImitationDirections({
+  prompt,
+  options,
+  initialDraftState,
+  draftRestoreNote,
+  onStateChange,
+  onSaveManualDraft,
+  onAutoSaveDraft,
+}: ImitationDirectionsProps) {
+  const [plans, setPlans] = useState<Direction[]>(() => initialDraftState?.plans || []);
+  const [originalPlans, setOriginalPlans] = useState<Direction[]>(() => initialDraftState?.originalPlans || []);
+  const [selected, setSelected] = useState<number[]>(() => initialDraftState?.selected || []);
+  const [active, setActive] = useState(() => initialDraftState?.active || 0);
+  const [drafts, setDrafts] = useState<Record<number, Draft>>(() => initialDraftState?.drafts || {});
   const [generating, setGenerating] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [prepChars, setPrepChars] = useState(0);
@@ -31,8 +50,8 @@ export default function ImitationDirections({ prompt, options }: { prompt: strin
   const [savedHintIndex, setSavedHintIndex] = useState<number | null>(null);
 
   const activeModel = normalizeClientModel(options?.model);
-  const [planModel, setPlanModel] = useState<string | null>(null);
-  const [verifiedServerModel, setVerifiedServerModel] = useState<string | null>(null);
+  const [planModel, setPlanModel] = useState<string | null>(() => initialDraftState?.planModel || null);
+  const [verifiedServerModel, setVerifiedServerModel] = useState<string | null>(() => initialDraftState?.verifiedServerModel || null);
   const [preparingModel, setPreparingModel] = useState<string | null>(null);
 
   const busy = generating || preparing;
@@ -40,11 +59,62 @@ export default function ImitationDirections({ prompt, options }: { prompt: strin
   const prepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const controllers = useRef(new Set<AbortController>());
   const controller = useRef<AbortController | null>(null);
-  const snapshot = useRef<any>(null);
+  const snapshot = useRef<any>(
+    initialDraftState?.plans?.length
+      ? { prompt: initialDraftState.promptSnapshot || prompt, options: { ...options } }
+      : null
+  );
   const paused = useRef(false);
   const latestOptions = useRef(options);
   const draftOptions = useRef<Record<number, any>>({});
   latestOptions.current = options;
+  const latestDraftsRef = useRef<Record<number, Draft>>(drafts);
+  latestDraftsRef.current = drafts;
+
+  useEffect(() => {
+    if (!initialDraftState) return;
+    const restoredDrafts: Record<number, Draft> = {};
+    Object.entries(initialDraftState.drafts || {}).forEach(([k, v]) => {
+      const idx = Number(k);
+      restoredDrafts[idx] = {
+        ...v,
+        resumable: v.resumable || (Boolean(v.text?.trim()) && v.status !== '已完成'),
+      };
+    });
+    setPlans(initialDraftState.plans || []);
+    setOriginalPlans(initialDraftState.originalPlans || initialDraftState.plans || []);
+    setSelected(initialDraftState.selected || []);
+    setActive(initialDraftState.active || 0);
+    setDrafts(restoredDrafts);
+    latestDraftsRef.current = restoredDrafts;
+    setPlanModel(initialDraftState.planModel || null);
+    setVerifiedServerModel(initialDraftState.verifiedServerModel || null);
+    snapshot.current =
+      initialDraftState.plans?.length > 0
+        ? { prompt: initialDraftState.promptSnapshot || prompt, options: { ...latestOptions.current } }
+        : null;
+  }, [initialDraftState]);
+
+  useEffect(() => {
+    if (!snapshot.current && plans.length > 0) {
+      snapshot.current = { prompt, options: { ...latestOptions.current } };
+    } else if (snapshot.current && prompt && !draftRestoreNote) {
+      snapshot.current = { ...snapshot.current, prompt };
+    }
+  }, [prompt, plans.length, draftRestoreNote]);
+
+  useEffect(() => {
+    onStateChange?.({
+      promptSnapshot: snapshot.current?.prompt || prompt,
+      planModel,
+      verifiedServerModel,
+      plans,
+      originalPlans,
+      selected,
+      active,
+      drafts,
+    });
+  }, [plans, originalPlans, selected, active, drafts, planModel, verifiedServerModel, prompt, onStateChange]);
 
   useEffect(() => {
     setError('');
@@ -216,7 +286,10 @@ ${prompt}`;
             // keep original interruption error when JSON is incomplete
           }
         }
-        if (!recovered) setError(e.message || '方案生成失败');
+        if (!recovered) {
+          setError(e.message || '方案生成失败');
+          onAutoSaveDraft?.('设计剧情方案失败自动保留');
+        }
       }
     } finally {
       if (controller.current === c) {
@@ -232,7 +305,10 @@ ${prompt}`;
   };
 
   const run = async (ids: number[], resume = false, regenerate = false) => {
-    if (busy || !snapshot.current) return;
+    if (busy) return;
+    if (!snapshot.current) {
+      snapshot.current = { prompt, options: { ...latestOptions.current } };
+    }
     let activePlans = plans;
     if (editingIndex !== null) {
       const committed = commitEdit();
@@ -254,14 +330,18 @@ ${prompt}`;
           const resolvedOptions =
             resume && draftOptions.current[id]
               ? draftOptions.current[id]
-              : { ...snapshot.current.options, ...latestOptions.current };
+              : { ...(snapshot.current?.options || {}), ...latestOptions.current };
           if (!resume) draftOptions.current[id] = resolvedOptions;
-          const update = (status: string, extra: any = {}) =>
+          const update = (status: string, extra: any = {}) => {
+            const nextMap = { ...latestDraftsRef.current, [id]: { text, status, ...extra } };
+            latestDraftsRef.current = nextMap;
             setDrafts((prev) => ({ ...prev, [id]: { text, status, ...extra } }));
+          };
           update('正在生成');
           try {
+            const activeTaskPrompt = prompt.trim() || snapshot.current?.prompt || '';
             const confirmedPlan = formatPlanForGeneration(activePlans[id]);
-            const task = `${snapshot.current.prompt}\n【最终确认的剧情走向（请严格以此为准进行创作）】\n${confirmedPlan}\n严格按以上确认的剧情走向与关键事件顺序写一篇完整故事，不要擅自偏离已修改的情节，只输出这篇正文。${resolvedOptions.bodyInstruction || ''}`;
+            const task = `${activeTaskPrompt}\n【最终确认的剧情走向（请严格以此为准进行创作）】\n${confirmedPlan}\n严格按以上确认的剧情走向与关键事件顺序写一篇完整故事，不要擅自偏离已修改的情节，只输出这篇正文。${resolvedOptions.bodyInstruction || ''}`;
             for await (const chunk of generateTextStream(task, {
               ...resolvedOptions,
               taskPrompt: task,
@@ -284,6 +364,16 @@ ${prompt}`;
                 c.signal.aborted ||
                 Boolean(text.trim()) ||
                 (e instanceof GenerationInterrupted && e.recoverable),
+            });
+            onAutoSaveDraft?.(c.signal.aborted ? '暂停生成自动保留' : '仿写中断自动保留', {
+              promptSnapshot: snapshot.current?.prompt || prompt,
+              planModel,
+              verifiedServerModel,
+              plans: activePlans,
+              originalPlans,
+              selected,
+              active,
+              drafts: latestDraftsRef.current,
             });
           } finally {
             controllers.current.delete(c);
@@ -314,11 +404,22 @@ ${prompt}`;
             先看脉络并按需编辑微调剧情，确认后再开始仿写；切换左侧模型或修改内容后，点击右侧按钮即可用当前模型重新设计方案。
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {onSaveManualDraft && (
+            <button
+              type="button"
+              disabled={!prompt.trim() && plans.length === 0 && Object.keys(drafts).length === 0}
+              onClick={onSaveManualDraft}
+              className="transition-all active:scale-95 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3.5 py-2 text-sm font-medium flex items-center gap-1.5 text-gray-700 dark:text-gray-200 hover:border-sky-300 hover:text-sky-700 dark:hover:text-sky-300 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            >
+              <FloppyDisk className="w-4 h-4" />
+              <span>存为草稿</span>
+            </button>
+          )}
           <button
             disabled={generating || (preparing && preparingModel === activeModel)}
             onClick={() => void prepare()}
-            className="transition-all active:scale-95 rounded-xl border border-sky-200 dark:border-sky-800 bg-white dark:bg-gray-900 px-4 py-2 font-medium flex items-center gap-2 hover:bg-sky-50 dark:hover:bg-sky-950/40 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="transition-all active:scale-95 rounded-xl border border-sky-200 dark:border-sky-800 bg-white dark:bg-gray-900 px-4 py-2 font-medium flex items-center gap-2 hover:bg-sky-50 dark:hover:bg-sky-950/40 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {preparing && <ArrowPath className="w-4 h-4 animate-spin text-sky-600" />}
             <span>
@@ -339,7 +440,7 @@ ${prompt}`;
             <button
               type="button"
               onClick={stopPrepare}
-              className="transition-transform active:scale-95 rounded-xl border border-rose-200 bg-rose-50 text-rose-600 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300 px-3 py-2 text-sm font-medium flex items-center gap-1 hover:bg-rose-100"
+              className="transition-transform active:scale-95 rounded-xl border border-rose-200 bg-rose-50 text-rose-600 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300 px-3 py-2 text-sm font-medium flex items-center gap-1 hover:bg-rose-100 whitespace-nowrap"
             >
               <X className="w-4 h-4" />
               取消
@@ -347,6 +448,25 @@ ${prompt}`;
           )}
         </div>
       </header>
+
+      {draftRestoreNote && (
+        <div
+          role="status"
+          className="rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50/80 dark:bg-sky-950/30 px-4 py-3 text-sm text-sky-900 dark:text-sky-200 flex flex-wrap items-center justify-between gap-3"
+        >
+          <span>
+            已载入草稿更新要求：「{draftRestoreNote}」。请点击上方「{plans.length ? (modelChangedSincePlans ? `用 ${activeModelLabel} 重新设计方案` : '重新设计方案') : '生成5个剧情方案'}」或下方「重新生成当前篇」生效。
+          </span>
+          <button
+            type="button"
+            disabled={generating}
+            onClick={() => void prepare()}
+            className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium whitespace-nowrap"
+          >
+            按新要求重新设计方案
+          </button>
+        </div>
+      )}
 
       {error && (
         <div
@@ -733,13 +853,23 @@ ${prompt}`;
                   {drafts[active].error}
                 </p>
               )}
-              <div className="my-3 flex items-center gap-3">
+              <div className="my-3 flex flex-wrap items-center gap-3">
                 <button
                   onClick={copyCurrent}
-                  className="min-h-[44px] border rounded-xl px-4 py-2 transition-all active:scale-95 hover:bg-sky-50 focus-visible:ring-2 ring-sky-400"
+                  className="min-h-[44px] border rounded-xl px-4 py-2 transition-all active:scale-95 hover:bg-sky-50 focus-visible:ring-2 ring-sky-400 whitespace-nowrap"
                 >
                   复制当前篇
                 </button>
+                {onSaveManualDraft && (
+                  <button
+                    type="button"
+                    onClick={onSaveManualDraft}
+                    className="min-h-[44px] border border-sky-200 dark:border-sky-800 rounded-xl px-4 py-2 text-sky-700 dark:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-950/40 inline-flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap"
+                  >
+                    <FloppyDisk className="w-4 h-4" />
+                    <span>存为草稿</span>
+                  </button>
+                )}
                 <span role="status" className="text-sm text-sky-600">
                   {copied === active ? '已复制' : ''}
                 </span>

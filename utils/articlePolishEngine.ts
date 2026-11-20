@@ -16,12 +16,20 @@ export const LIGHT_POLISH_FOCUSES: PolishFocusOption[] = [
 ];
 
 export const EDITORIAL_FOCUSES: PolishFocusOption[] = [
-  { id: 'redundancy', label: '冗余表达', description: '排查车轱辘话、重复交代与无效修饰' },
-  { id: 'dialogue_voice', label: '对话与人物口吻', description: '检查角色说话是否串味、生硬或违背当下处境' },
-  { id: 'emotion', label: '情绪呈现', description: '评估情绪推演是否充分、是否只靠抽象形容词硬喊情绪' },
-  { id: 'pacing', label: '叙事节奏', description: '识别拖沓段落、过快转折或信息密度失衡之处' },
-  { id: 'logic_flow', label: '逻辑与衔接', description: '排查因果断层、细节前后矛盾及场景过渡突兀点' },
+  { id: 'story_appeal', label: '精彩度与开篇钩子', description: '找出平淡乏味处，给出强化悬念钩子、代入感与追读欲的内容增改建议' },
+  { id: 'conflict_tension', label: '冲突张力与反转看点', description: '定位对抗偏软、转折不够有力的段落，建议如何拉满博弈感与情节看点' },
+  { id: 'character_spark', label: '人物立体感与对话火花', description: '增强角色动机、微表情与对话潜台词，去掉扁平说教感、增强互动记忆点' },
+  { id: 'scene_craft', label: '画面感与行文表现力', description: '将干瘪概括的叙述优化为具象镜头、感官细节与自然韵律，避免平铺直叙' },
+  { id: 'pacing_emotion', label: '情绪落点与结构节奏', description: '优化铺垫密度、高潮爆发点与结尾余韵，删去拖沓过渡、突出打动人心的节点' },
 ];
+
+const LEGACY_EDITORIAL_FOCUS_MAP: Record<string, string> = {
+  redundancy: 'scene_craft',
+  dialogue_voice: 'character_spark',
+  emotion: 'pacing_emotion',
+  pacing: 'pacing_emotion',
+  logic_flow: 'conflict_tension',
+};
 
 export interface LightChangeItem {
   id: string;
@@ -97,6 +105,8 @@ export interface PolishVersionRecord {
 
 export interface LightPolishModeState {
   focuses: string[];
+  extraNotes: string;
+  targetChars: number;
   rawOutput: string;
   prosePreview: string;
   changes: LightChangeItem[];
@@ -117,6 +127,10 @@ export interface DeepRewriteModeState {
   skeletonStatus: string;
   perspective: string;
   endingPreference: string;
+  preserveStyle: boolean;
+  customConstraints: string;
+  settingChanges: string;
+  plotChanges: string;
   styleNotes: string;
   targetChars: number;
   sourceSnapshot?: string;
@@ -136,6 +150,7 @@ export interface DeepRewriteModeState {
 
 export interface EditorialModeState {
   focuses: string[];
+  extraNotes: string;
   rawOutput: string;
   suggestions: EditorialSuggestionItem[];
   sourceSnapshot: string;
@@ -243,6 +258,8 @@ export function createInitialTask(title = '未命名稿件'): PolishTaskRecord {
     topP: 0.9,
     light: {
       focuses: ['trim_fluff', 'reduce_repetition', 'fix_mechanical'],
+      extraNotes: '',
+      targetChars: 0,
       rawOutput: '',
       prosePreview: '',
       changes: [],
@@ -261,6 +278,10 @@ export function createInitialTask(title = '未命名稿件'): PolishTaskRecord {
       skeletonStatus: '',
       perspective: '保持原稿人称与视角',
       endingPreference: '保持原稿结局',
+      preserveStyle: true,
+      customConstraints: '',
+      settingChanges: '',
+      plotChanges: '',
       styleNotes: '',
       targetChars: 0,
       rewrittenText: '',
@@ -274,7 +295,8 @@ export function createInitialTask(title = '未命名稿件'): PolishTaskRecord {
       hasUnsavedResult: false,
     },
     editorial: {
-      focuses: ['redundancy', 'dialogue_voice', 'logic_flow'],
+      focuses: ['story_appeal', 'conflict_tension', 'scene_craft'],
+      extraNotes: '',
       rawOutput: '',
       suggestions: [],
       sourceSnapshot: '',
@@ -350,28 +372,46 @@ function extractBalancedJson(raw: string, openChar: '{' | '[', closeChar: '}' | 
 
 export const LIGHT_POLISH_NOTES_DELIMITER = '<<<POLISH_NOTES>>>';
 
-export function buildLightPolishPrompt(params: { text: string; focuses: string[] }): string {
+export function buildLightPolishPrompt(params: {
+  text: string;
+  focuses: string[];
+  extraNotes?: string;
+  targetChars?: number;
+}): string {
   const selectedLabels = LIGHT_POLISH_FOCUSES
     .filter((f) => params.focuses.includes(f.id))
     .map((f) => `- ${f.label}：${f.description}`)
     .join('\n');
 
+  const sourceChars = params.text.replace(/\s+/g, '').length;
+  const extraNotes = (params.extraNotes || '').trim();
+  const targetChars = params.targetChars && params.targetChars > 0 ? params.targetChars : 0;
+
+  const lengthRule = targetChars > 0
+    ? `4. 【字数控制】：请将润色后正文全篇字数严格控制在约 ${targetChars} 字（允许 ${Math.ceil(targetChars * 0.9)}～${Math.floor(targetChars * 1.1)} 字），通过精简或合理补足细节达成节奏贴合，严禁无端注水或过度删减核心情节。`
+    : `4. 【篇幅收敛】：原文约 ${sourceChars} 字，轻度润色应保持紧凑贴近原文篇幅（通常略微精简至 ${Math.max(1, Math.round(sourceChars * 0.85))}～${Math.max(1, Math.round(sourceChars * 1.05))} 字），严禁无端扩写或堆砌华丽词藻。`;
+
+  const extraSection = extraNotes
+    ? `\n【作者补充润色要求（请在保留核心故事前提下认真执行）】\n${extraNotes}\n`
+    : '';
+
   return `你是一位严谨克制的小说文字编辑，正在执行「轻度润色（保留故事，精简表达）」。
 
 【本次润色侧重点】
 ${selectedLabels || '- 精简空泛修饰、减少重复表达，保持语言自然流畅'}
-
+${extraSection}
 【默认必须保留】
 1. 完整保留人物关系、关键事件、因果关系与事件先后顺序。
-2. 完整保留原稿人称视角、角色口吻与原有结局。
+2. 完整保留原稿人称视角、角色口吻与原有结局（除非作者补充要求另有说明）。
 3. 完整保留伏笔、线索、关键物件以及有叙事意义的意象。
 
 【润色严格守则】
 1. 不要机械删除所有形容词或修饰语，只精简缺乏信息量、对人物塑造与叙事无推进作用的空泛修饰。
-2. 保留作者有意设计的节奏、修辞张力与情感停顿。
-3. 严禁擅自新增事件、新增人物、杜撰动作或对话；若发现必须大改或补充信息才顺畅之处，不要擅改原意，留作说明即可。
-4. 直接输出润色后的完整正文（保持原文分段结构），不要输出“好的，以下为润色结果”等客套开场白。
-5. 在全部正文输出结束后的最后，另起一行输出分隔符 ${LIGHT_POLISH_NOTES_DELIMITER}，紧接着输出一个 JSON 数组，记录主要修改对照与原因，格式为：
+2. 保留作者有意设计的节奏、修辞张力与情感停顿；不写成千篇一律的空洞抒情句。
+3. 未经作者补充要求允许，严禁擅自新增事件、新增人物、杜撰动作或对话；若发现必须大改或补充信息才顺畅之处，不要擅改原意，留作说明即可。
+${lengthRule}
+5. 直接输出润色后的完整正文（保持原文分段结构），不要输出“好的，以下为润色结果”等客套开场白。
+6. 在全部正文输出结束后的最后，另起一行输出分隔符 ${LIGHT_POLISH_NOTES_DELIMITER}，紧接着输出一个 JSON 数组，记录主要修改对照与原因，格式为：
 [{"original":"被修改的原句或片段","revised":"修改后的句子或片段","reason":"简明说明为什么这样改"}]
 
 【待润色正文】
@@ -726,12 +766,82 @@ export function parseSkeletonResponse(raw: string): StorySkeleton {
   return skeleton;
 }
 
+export function extractCharTargetFromText(text?: string): number | null {
+  if (!text || !text.trim()) return null;
+  const matches = [...text.matchAll(/([一二三四五六七八九十两\d.]+)\s*(万字|千字|字)/g)];
+  const match = matches.at(-1);
+  if (!match) return null;
+  const digits: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  const n = Number(match[1]) || digits[match[1]];
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const target = Math.round(n * (match[2] === '万字' ? 10000 : match[2] === '千字' ? 1000 : 1));
+  if (target < 300 || target > 30000) return null;
+  return target;
+}
+
+export interface DeepRewriteExecutionBudget {
+  effectiveTargetChars?: number;
+  explicitTarget: boolean;
+  useStageControl: boolean;
+  maxOutputTokens: number;
+  minBound: number;
+  maxBound: number;
+}
+
+/**
+ * Computes real execution constraints (targetChars, stageControl, maxOutputTokens)
+ * for Deep Rewrite so outputs stay concise and bounded whether the author sets an
+ * explicit length, mentions a char limit in customConstraints, or leaves length on auto.
+ */
+export function computeDeepRewriteExecutionBudget(params: {
+  sourceChars: number;
+  targetChars: number;
+  customConstraints?: string;
+}): DeepRewriteExecutionBudget {
+  const safeSource = Math.max(100, Math.round(params.sourceChars || 0));
+  const explicitFromControl = params.targetChars > 0 ? Math.round(params.targetChars) : null;
+  const explicitFromCustom = explicitFromControl ? null : extractCharTargetFromText(params.customConstraints);
+  const explicit = explicitFromControl || explicitFromCustom;
+
+  if (explicit) {
+    const minBound = Math.ceil(explicit * 0.9);
+    const maxBound = Math.floor(explicit * 1.1);
+    const maxOutputTokens = Math.min(32768, Math.max(2048, Math.round(maxBound * 1.9) + 2048));
+    return {
+      effectiveTargetChars: explicit,
+      explicitTarget: true,
+      useStageControl: explicit >= 3500,
+      maxOutputTokens,
+      minBound,
+      maxBound,
+    };
+  }
+
+  // No explicit target chosen: anchor tightly near the original manuscript length so models cannot bloat 2-3x.
+  const minBound = Math.max(200, Math.round(safeSource * 0.85));
+  const maxBound = Math.max(400, Math.round(safeSource * 1.12));
+  const maxOutputTokens = Math.min(32768, Math.max(2048, Math.round(maxBound * 1.75) + 1536));
+  return {
+    effectiveTargetChars: safeSource >= 400 ? safeSource : undefined,
+    explicitTarget: false,
+    useStageControl: safeSource >= 4500,
+    maxOutputTokens,
+    minBound,
+    maxBound,
+  };
+}
+
 export function buildDeepRewritePrompt(params: {
   sourceText: string;
   skeleton: StorySkeleton;
   perspective: string;
   endingPreference: string;
   styleNotes: string;
+  customConstraints?: string;
+  preserveStyle?: boolean;
+  settingChanges?: string;
+  plotChanges?: string;
+  targetChars?: number;
 }): string {
   const lockedCards: string[] = [];
   const unlockedCards: string[] = [];
@@ -743,26 +853,56 @@ export function buildDeepRewritePrompt(params: {
     else unlockedCards.push(line);
   }
 
-  return `你是一位专业小说作者，正在执行「深度重写」任务：基于作者确认后的故事骨架，重新创作语言表达与场景描写，写成一篇连贯完整的新稿。
+  const preserveStyle = params.preserveStyle !== false;
+  const customConstraints = (params.customConstraints || '').trim();
+  const settingChanges = (params.settingChanges || '').trim();
+  const plotChanges = (params.plotChanges || '').trim();
+  const styleNotes = (params.styleNotes || '').trim();
+  const sourceChars = params.sourceText.replace(/\s+/g, '').length;
+  const budget = computeDeepRewriteExecutionBudget({
+    sourceChars,
+    targetChars: params.targetChars || 0,
+    customConstraints,
+  });
 
+  const lengthInstruction = budget.explicitTarget && budget.effectiveTargetChars
+    ? `严格围绕目标字数 ${budget.effectiveTargetChars} 字（允许区间 ${budget.minBound}～${budget.maxBound} 字）精准分配全篇各幕篇幅与叙事节奏；写完主线并收束余韵即止，严禁注水凑字数或超出上限，也严禁草草收尾。`
+    : `严格贴近原稿篇幅（原稿约 ${sourceChars} 字，请控制在 ${budget.minBound}～${budget.maxBound} 字以内），绝不允许擅自扩写拉长、反复水词或写成冗长散文。`;
+
+  const voiceInstruction = preserveStyle
+    ? '高度保持原稿的文风基调、平实克制的叙事语感、用词习惯、句子长短节奏与人物对话腔调；保留原文有辨识度的神韵与留白感，只重构拖沓、干瘪或机械的部分，绝不洗成浮夸煽情的套话腔。'
+    : '按作者自定义的改写方向与补充要求重塑语言气质与叙事风格，仍须保持落笔克制、具体可感，拒绝空洞浮华的辞藻堆砌。';
+
+  return `你是一位功底扎实、文风克制的专业小说作者，正在执行「深度重写」任务：基于作者确认后的故事骨架与自定义方向约束，写出凝练紧凑、自然落地、不浮夸、不注水的新稿。
+${customConstraints ? `
+【作者自定义改写方向与约束目标（最高优先级，必须逐条严格落实）】
+${customConstraints}
+` : ''}
 【已锁定要素（必须严格遵循，不得擅自更改）】
 ${lockedCards.length > 0 ? lockedCards.join('\n\n') : '（本次无额外单列锁定卡片，仍须忠于下方已确认骨架）'}
 
 【已确认故事骨架】
 ${unlockedCards.length > 0 ? unlockedCards.join('\n\n') : '（全部要素均已纳入上方锁定清单）'}
 
-【写法与口径要求】
+【设定与剧情发展调整（若填写，必须顺畅融入因果并优先落地）】
+- 设定调整：${settingChanges || '沿用原稿与骨架设定'}
+- 剧情发展调整：${plotChanges || '按上方已确认骨架的事件顺序与走势推进'}
+
+【文风与控字要求】
 - 人称与视角：${params.perspective || '保持原稿人称与视角'}
 - 结局要求：${params.endingPreference || '保持原稿结局'}
-- 作者补充写法与要求：${params.styleNotes.trim() || '全面重写表达、消除干瘪与机械句式，增强画面感、动作质感与自然对白'}
+- 文风口径：${voiceInstruction}
+- 补充写法要求：${styleNotes || '用具体动作、细节和自然对话推进情节，克制留白，不堆砌形容词'}
+- 篇幅与控字：${lengthInstruction}
 
-【单篇重写严格原则】
-1. 保持同一篇故事的连续性与因果逻辑，从头到尾自然展开。
-2. 不得通过拼接第二篇故事、重复段落或注水总结来凑字数。
-3. 不得擅自修改作者锁定的人物关系、关键事件或原稿结局。
-4. 直接输出重写后的小说正文，不要输出任何前言、提纲说明、字数报告或元叙事评论。
+【去浮夸与严禁冗杂铁律】
+1. 坚决去浮夸：严禁堆砌华丽空洞的形容词/四字成语/排比感叹，严禁伪文艺腔、强行抒情和价值升华，严禁滥用“瞳孔骤缩、心脏漏拍、空气仿佛凝固、一股难以言喻的寒意”等陈词滥调。
+2. 情绪藏在事里：优先用具体动作、克制神态和有潜台词的对话推进故事，不要替读者做心理总结、情绪旁白或复述前情。
+3. 严控篇幅不注水：保持同一篇故事的连续性与因果逻辑，直接展开有效场景，严禁为了“显文采”拉长景物铺垫、同义反复或拼凑第二篇故事。
+4. 未经作者在【作者自定义改写方向与约束目标】或【设定与剧情发展调整】中要求改动的部分，不得擅自篡改已锁定的核心关系、关键细节或结局。
+5. 直接输出重写后的小说正文，严禁输出任何前言、提纲、修改说明、字数报告或结束感言。
 
-【原稿参照（仅作细节核对，请全面重构其文字表达）】
+【原稿参照（用于对照文风语感、人物语气与未改动的具体细节）】
 ${params.sourceText}`;
 }
 
@@ -815,34 +955,46 @@ export function parseConsistencyDeviations(raw: string): DeviationNote[] {
 // Mode 3: Editorial Suggestions Prompts, Quote Anchor & Offset Rebuild
 // ============================================================
 
-export function buildEditorialSuggestionsPrompt(params: { text: string; focuses: string[] }): string {
+export function buildEditorialSuggestionsPrompt(params: {
+  text: string;
+  focuses: string[];
+  extraNotes?: string;
+}): string {
   const selectedLabels = EDITORIAL_FOCUSES
     .filter((f) => params.focuses.includes(f.id))
     .map((f) => `- ${f.label}：${f.description}`)
     .join('\n');
+  const extraNotes = (params.extraNotes || '').trim();
 
-  return `你是一位资深小说责编，请对下方原稿做「逐条审读与编辑建议」，由作者逐条决定采纳或保留。
+  return `你是一位资深小说内容策划与文学责编，请对下方原稿做「内容精彩度与行文优化建议」，帮助作者提升故事吸引力、情绪张力与文本表现力，并由作者逐条决定采纳或保留。
 
-【本次重点关注方向】
-${selectedLabels || '- 冗余表达、对话与口吻、情绪呈现、叙事节奏、逻辑与衔接'}
+【任务边界（重要：严禁与“审稿”功能重复）】
+- 不要排查错别字、标点笔误、人名同音冲突或原文查重（这些由专门的审稿模块负责）。
+- 请聚焦「文章内容性优化」：识别平淡过渡、张力不足、人物互动缺火花、叙述干瘪直白、反转/情绪落点可以更出彩的具体段落，给出能让文章更好看、更有戏的添改建议与示范改写。
 
+【本次重点优化方向】
+${selectedLabels || '- 精彩度与开篇钩子、冲突张力与反转看点、人物立体感与对话火花、画面感与行文表现力、情绪落点与结构节奏'}
+${extraNotes ? `
+【作者自定义优化需求（优先围绕以下目标给出具体、可落地的添改建议）】
+${extraNotes}
+` : ''}
 【输出严格要求】
 1. 严格返回一个合法 JSON 数组（不要输出数组以外的任何解释文字），格式如下：
 [
   {
-    "category": "冗余表达 | 对话与人物口吻 | 情绪呈现 | 叙事节奏 | 逻辑与衔接",
-    "quote": "必须从原稿中一字不差截取的连续原文句子或片段（建议 10～80 字，必须能在原文中精确找到）",
-    "issue": "具体指出的问题（结合该处上下文，避免空泛套话）",
-    "reason": "为什么要这样修改",
-    "suggestion": "可直接替换 quote 的完整修改稿；若属于原稿信息缺失需要作者补充，请说明建议补充方向并把 needsAuthorInput 设为 true",
+    "category": "精彩度与开篇钩子 | 冲突张力与反转看点 | 人物立体感与对话火花 | 画面感与行文表现力 | 情绪落点与结构节奏",
+    "quote": "必须从原稿中一字不差截取的连续原文句子或片段（建议 12～90 字，必须能在原文中精确找到）",
+    "issue": "指出此处为什么偏平淡/缺张力/行文不够出彩（结合上下文，拒绝空泛套话）",
+    "reason": "这样添改后，故事精彩度、画面感或情绪代入感会如何提升",
+    "suggestion": "可直接替换 quote 的出彩优化改写稿（保持原稿人称与克制质感，不浮夸）；若属于需要作者补充新设定/新桥段的加戏点子，请写明具体加戏思路并把 needsAuthorInput 设为 true",
     "needsAuthorInput": false
   }
 ]
-2. 禁止泛泛评价；每条建议必须精准对应原稿中真实存在的连续文字（quote）。
-3. 对于原稿没有交代的设定或隐情，不得把猜测直接当事实写进正文替换稿，应将 needsAuthorInput 设为 true，在 suggestion 中用问答/留白方式请作者决定。
-4. 尽量覆盖不同段落的实质性问题，输出 5～12 条高价值、相互不重叠的建议；同时确保每条 quote 互不重叠、按原文先后顺序排列。
+2. 禁止泛泛评价或空喊“建议写得更生动”；每条建议必须精准对应原稿中真实存在的连续文字（quote），并给出贴合原文气质的高质量改写示范或具体加戏方案。
+3. 若涉及原稿尚未交代的新背景、新隐情或新人物设定，不得把猜测直接当事实硬写进替换稿，应将 needsAuthorInput 设为 true，在 suggestion 中给出 1～2 种可落地的增补方向供作者挑选。
+4. 尽量覆盖开篇、中段冲突、人物互动与高潮收束等不同位置，输出 5～12 条高价值、相互不重叠的建议；同时确保每条 quote 互不重叠、按原文先后顺序排列。
 
-【待审读原稿】
+【待优化原稿】
 ${params.text}`;
 }
 
@@ -1051,6 +1203,51 @@ export function getPolishStorageKey(userId: string | null): string {
   return `qisimiaoxie_article_polish_tasks_v1_${userId || 'guest'}`;
 }
 
+export function normalizePolishTaskRecord(raw: any): PolishTaskRecord {
+  const base = createInitialTask(typeof raw?.title === 'string' && raw.title ? raw.title : '未命名稿件');
+  const validEditorialIds = new Set(EDITORIAL_FOCUSES.map((f) => f.id));
+  const rawEditorialFocuses: string[] = Array.isArray(raw?.editorial?.focuses) ? raw.editorial.focuses : [];
+  const mappedEditorialFocuses = Array.from(
+    new Set(
+      rawEditorialFocuses
+        .map((id) => (validEditorialIds.has(id) ? id : LEGACY_EDITORIAL_FOCUS_MAP[id] || ''))
+        .filter(Boolean)
+    )
+  );
+  return {
+    ...base,
+    ...raw,
+    light: {
+      ...base.light,
+      ...(raw?.light || {}),
+      extraNotes: typeof raw?.light?.extraNotes === 'string' ? raw.light.extraNotes : '',
+      targetChars: typeof raw?.light?.targetChars === 'number' ? raw.light.targetChars : 0,
+    },
+    deep: {
+      ...base.deep,
+      ...(raw?.deep || {}),
+      preserveStyle: typeof raw?.deep?.preserveStyle === 'boolean' ? raw.deep.preserveStyle : true,
+      customConstraints: typeof raw?.deep?.customConstraints === 'string' ? raw.deep.customConstraints : '',
+      settingChanges: typeof raw?.deep?.settingChanges === 'string' ? raw.deep.settingChanges : '',
+      plotChanges: typeof raw?.deep?.plotChanges === 'string' ? raw.deep.plotChanges : '',
+      targetChars: typeof raw?.deep?.targetChars === 'number' ? raw.deep.targetChars : 0,
+    },
+    editorial: {
+      ...base.editorial,
+      ...(raw?.editorial || {}),
+      focuses: mappedEditorialFocuses.length > 0 ? mappedEditorialFocuses : base.editorial.focuses,
+      extraNotes: typeof raw?.editorial?.extraNotes === 'string' ? raw.editorial.extraNotes : '',
+      workingText:
+        typeof raw?.editorial?.workingText === 'string' && raw.editorial.workingText
+          ? raw.editorial.workingText
+          : typeof raw?.originalText === 'string'
+            ? raw.originalText
+            : '',
+    },
+    versions: Array.isArray(raw?.versions) ? raw.versions : [],
+  };
+}
+
 export function loadPolishTasks(userId: string | null): PolishTaskRecord[] {
   if (typeof localStorage === 'undefined') return [];
   try {
@@ -1058,7 +1255,9 @@ export function loadPolishTasks(userId: string | null): PolishTaskRecord[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item) => item && typeof item.id === 'string' && typeof item.originalText === 'string');
+    return parsed
+      .filter((item) => item && typeof item.id === 'string' && typeof item.originalText === 'string')
+      .map((item) => normalizePolishTaskRecord(item));
   } catch {
     return [];
   }

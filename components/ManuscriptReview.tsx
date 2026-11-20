@@ -7,7 +7,14 @@ import {
     Eye, Pencil, Plus, ChevronDown, ChevronUp, ArrowUturnLeft
 } from './Icon';
 import { ALL_MODEL_OPTIONS } from '../constants';
-import { saveMaterial } from '../services/supabaseService';
+import { getCurrentUserId, saveMaterial } from '../services/supabaseService';
+import {
+    WorkbenchDraftRecord,
+    ReviewDraftPayload,
+    saveWorkbenchDraft,
+    buildDraftPreview,
+    deriveDraftTitle,
+} from '../utils/workbenchDrafts';
 import {
     AuditCacheState,
     AuditReportResult,
@@ -78,7 +85,19 @@ const DEMO_IMITATION = `古成站在五十层落地大厦前，眼神冰冷地�
 
 窗外月色凄迷，一场暗流汹涌的商战风暴正在暗中酝酿。`;
 
-export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) => {
+export interface ManuscriptReviewProps {
+    isActive: boolean;
+    draftToRestore?: WorkbenchDraftRecord | null;
+    draftUpdatedReq?: { note?: string; model?: string; targetChars?: number } | null;
+    onDraftRestored?: () => void;
+}
+
+export const ManuscriptReview: React.FC<ManuscriptReviewProps> = ({
+    isActive,
+    draftToRestore,
+    draftUpdatedReq,
+    onDraftRestored,
+}) => {
     // 文本状态
     const [originalText, setOriginalText] = useState<string>('');
     const [imitationText, setImitationText] = useState<string>('');
@@ -90,8 +109,11 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
     const [auditProgress, setAuditProgress] = useState<string>('');
     const [auditError, setAuditError] = useState<string | null>(null);
     const [report, setReport] = useState<AuditReportResult | null>(null);
+    const [restoredReqNote, setRestoredReqNote] = useState<string>('');
     const auditCacheRef = useRef<AuditCacheState | null>(null);
     const auditAbortRef = useRef<AbortController | null>(null);
+    const userIdRef = useRef<string | null>(null);
+    const wasActiveRef = useRef<boolean>(isActive);
 
     // 下半部分可拖动高度控制 (最小44px收起状态，最大紧贴上方汇总栏)
     const [drawerHeight, setDrawerHeight] = useState<number>(360);
@@ -150,10 +172,141 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
     const fileInputOriginalRef = useRef<HTMLInputElement>(null);
     const fileInputImitationRef = useRef<HTMLInputElement>(null);
 
-    const showToast = (msg: string) => {
+    const showToast = useCallback((msg: string) => {
         setToastMessage(msg);
         setTimeout(() => setToastMessage(null), 3500);
+    }, []);
+
+    const latestReviewStateRef = useRef<{
+        originalText: string;
+        imitationText: string;
+        selectedModel: string;
+        report: AuditReportResult | null;
+        ignoredConflictKeys: Set<string>;
+        customAddedCharacters: string[];
+        excludedCharacters: Set<string>;
+        auditError: string | null;
+    }>({
+        originalText: '',
+        imitationText: '',
+        selectedModel: 'deepseek-chat',
+        report: null,
+        ignoredConflictKeys: new Set(),
+        customAddedCharacters: [],
+        excludedCharacters: new Set(),
+        auditError: null,
+    });
+
+    latestReviewStateRef.current = {
+        originalText,
+        imitationText,
+        selectedModel,
+        report,
+        ignoredConflictKeys,
+        customAddedCharacters,
+        excludedCharacters,
+        auditError,
     };
+
+    useEffect(() => {
+        getCurrentUserId()
+            .then((uid) => {
+                userIdRef.current = uid;
+            })
+            .catch(() => {
+                userIdRef.current = null;
+            });
+    }, []);
+
+    const saveReviewDraft = useCallback(
+        (saveType: 'manual' | 'auto', statusOverride?: string) => {
+            const snap = latestReviewStateRef.current;
+            if (!snap.originalText.trim() && !snap.imitationText.trim() && !snap.report) {
+                return null;
+            }
+            const activeConflicts = snap.report?.characterConflicts?.filter((c) => !c.ignored).length || 0;
+            const reqParts = [
+                `审稿模型：${snap.selectedModel}`,
+                snap.customAddedCharacters.length > 0 ? `重点人物：${snap.customAddedCharacters.join('、')}` : '',
+                snap.report
+                    ? `整体相似度 ${snap.report.overallSimilarity}% · 错别字 ${snap.report.typoIssues.length} · 冲突 ${activeConflicts}`
+                    : '待智能审稿',
+            ].filter(Boolean);
+
+            const payload: ReviewDraftPayload = {
+                originalText: snap.originalText,
+                imitationText: snap.imitationText,
+                selectedModel: snap.selectedModel,
+                report: snap.report,
+                auditCache: auditCacheRef.current,
+                ignoredConflictKeys: Array.from(snap.ignoredConflictKeys),
+                customAddedCharacters: [...snap.customAddedCharacters],
+                excludedCharacters: Array.from(snap.excludedCharacters),
+                auditError: snap.auditError,
+            };
+
+            const saved = saveWorkbenchDraft(userIdRef.current, {
+                autoSlotKey: saveType === 'auto' ? 'auto-review-current' : undefined,
+                category: 'review',
+                saveType,
+                title: deriveDraftTitle(snap.imitationText || snap.originalText, '审稿比对稿件'),
+                model: snap.selectedModel,
+                requirementsNote: reqParts.join('；'),
+                outputPreview: buildDraftPreview(snap.imitationText || snap.originalText, 140),
+                outputCharCount: snap.imitationText.replace(/\s+/g, '').length,
+                sourceCharCount: snap.originalText.replace(/\s+/g, '').length,
+                statusLabel: statusOverride || (saveType === 'auto' ? '退出自动保留' : '手动存为草稿'),
+                payload,
+            });
+
+            if (saveType === 'manual') {
+                showToast('已保存审稿草稿至「个人中心 · 我的草稿」');
+            }
+            return saved;
+        },
+        [showToast]
+    );
+
+    useEffect(() => {
+        if (wasActiveRef.current && !isActive) {
+            saveReviewDraft('auto', '离开审稿自动保留');
+        }
+        wasActiveRef.current = isActive;
+    }, [isActive, saveReviewDraft]);
+
+    useEffect(() => {
+        const handleBeforeLeave = () => {
+            saveReviewDraft('auto', '退出自动保留');
+        };
+        window.addEventListener('beforeunload', handleBeforeLeave);
+        window.addEventListener('pagehide', handleBeforeLeave);
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeLeave);
+            window.removeEventListener('pagehide', handleBeforeLeave);
+            handleBeforeLeave();
+        };
+    }, [saveReviewDraft]);
+
+    useEffect(() => {
+        if (!draftToRestore) return;
+        const payload = draftToRestore.payload as ReviewDraftPayload;
+        setOriginalText(payload.originalText || '');
+        setImitationText(payload.imitationText || '');
+        setSelectedModel(draftUpdatedReq?.model || payload.selectedModel || 'deepseek-chat');
+        setReport(payload.report || null);
+        auditCacheRef.current = payload.auditCache || null;
+        setIgnoredConflictKeys(new Set(payload.ignoredConflictKeys || []));
+        setCustomAddedCharacters(payload.customAddedCharacters || []);
+        setExcludedCharacters(new Set(payload.excludedCharacters || []));
+        setAuditError(payload.auditError || null);
+        setActiveLocate(null);
+        setViewMode('audit');
+        setPaletteMode('issues');
+        const note = draftUpdatedReq?.note?.trim() || '';
+        setRestoredReqNote(note);
+        showToast(note ? '已载入审稿草稿与新要求，可直接点击重新审稿' : '已从我的草稿恢复审稿工作区');
+        onDraftRestored?.();
+    }, [draftToRestore, draftUpdatedReq, onDraftRestored, showToast]);
 
     // 拖动调节面板高度
     useEffect(() => {
@@ -534,6 +687,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
             const secs = (nextReport.durationMs / 1000).toFixed(1);
             if (!nextReport.coverage.isComplete) {
                 showToast('审稿未完成，部分内容需要重试');
+                saveReviewDraft('auto', '审稿部分未完成自动保留');
             } else {
                 showToast(`全文审稿完成（耗时 ${secs}秒）`);
             }
@@ -542,6 +696,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
             const userFriendlyMsg = formatModelFailureMessage(String(e?.message || '未知错误'));
             setAuditError(userFriendlyMsg);
             showToast(userFriendlyMsg);
+            saveReviewDraft('auto', '审稿中断自动保留');
         } finally {
             setActiveTaskMode('idle');
             setAuditProgress('');
@@ -589,6 +744,7 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
             const userFriendlyMsg = formatModelFailureMessage(String(e?.message || '未知错误'));
             setAuditError(userFriendlyMsg);
             showToast(userFriendlyMsg);
+            saveReviewDraft('auto', '复检中断自动保留');
         } finally {
             setActiveTaskMode('idle');
             setAuditProgress('');
@@ -627,12 +783,14 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                 showToast(`失败部分重试成功，全文审稿已完成（累计耗时 ${(nextReport.durationMs / 1000).toFixed(1)}秒）`);
             } else {
                 showToast('仍有部分内容未完成，请稍后再次重试或切换上方模型');
+                saveReviewDraft('auto', '审稿重试部分未完成');
             }
         } catch (e: any) {
             console.error('Retry failed parts error:', e);
             const userFriendlyMsg = formatModelFailureMessage(String(e?.message || ''));
             setAuditError(userFriendlyMsg);
             showToast(userFriendlyMsg);
+            saveReviewDraft('auto', '重试失败自动保留');
         } finally {
             setActiveTaskMode('idle');
             setAuditProgress('');
@@ -1791,6 +1949,17 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
 
                     <button
                         type="button"
+                        onClick={() => saveReviewDraft('manual', '手动存为草稿')}
+                        disabled={!originalText.trim() && !imitationText.trim() && !report}
+                        className="h-8 px-3 text-xs leading-none font-medium text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/30 hover:bg-sky-100 dark:hover:bg-sky-900/40 rounded-lg transition-all border border-sky-200 dark:border-sky-800 inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed"
+                        title="保存当前原稿、仿写稿与审稿结果到个人中心我的草稿"
+                    >
+                        <FloppyDisk className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span>存为草稿</span>
+                    </button>
+
+                    <button
+                        type="button"
                         onClick={handleClear}
                         className="h-8 w-8 text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all cursor-pointer inline-flex items-center justify-center flex-shrink-0"
                         title="全部清除并恢复初始界面"
@@ -1831,6 +2000,34 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                     </button>
                 </div>
             </header>
+
+            {restoredReqNote && (
+                <div className="px-6 py-2 bg-sky-50 dark:bg-sky-950/40 border-b border-sky-200 dark:border-sky-800 flex items-center justify-between gap-3 text-xs text-sky-900 dark:text-sky-200 flex-shrink-0">
+                    <span>
+                        已从草稿载入补充要求：「{restoredReqNote}」。可调整模型或人物清单后点击右上角「{hasPendingIncrementalChanges ? '局部复检变更' : report ? '全篇重审' : '开始智能审稿'}」。
+                    </span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                        <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => {
+                                setRestoredReqNote('');
+                                void handleRunFullAudit();
+                            }}
+                            className="h-6 px-2.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold inline-flex items-center whitespace-nowrap disabled:opacity-50"
+                        >
+                            立即重新审稿
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setRestoredReqNote('')}
+                            className="h-6 px-2 rounded bg-sky-100 dark:bg-sky-900/50 hover:bg-sky-200 text-[11px] font-semibold inline-flex items-center"
+                        >
+                            关闭
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* Real API Failure Alert (Concise, no silent model switching) */}
             {auditError && (
@@ -1930,6 +2127,15 @@ export const ManuscriptReview: React.FC<{ isActive: boolean }> = ({ isActive }) 
                         >
                             <FloppyDisk className="w-3 h-3 flex-shrink-0" />
                             <span>存素材</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => saveReviewDraft('manual', '手动存为草稿')}
+                            className="h-7 px-2 text-xs leading-none font-semibold text-sky-700 dark:text-sky-300 hover:bg-white dark:hover:bg-slate-700 rounded transition inline-flex items-center gap-1 whitespace-nowrap"
+                            title="存为审稿草稿"
+                        >
+                            <FloppyDisk className="w-3 h-3 flex-shrink-0" />
+                            <span>存草稿</span>
                         </button>
                     </div>
                 </div>
